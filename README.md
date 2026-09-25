@@ -1,121 +1,164 @@
-# Healthcare Document Intelligence & RAG Assistant
+# Healthcare Document Intelligence Platform (Adaptive RAG)
 
-## 1. Problem Statement
-Many healthcare documents (such as medical reports, awareness materials, and prescriptions) are stored as PDFs, some of which are scanned images. Extracting specific information from these documents can be time-consuming for patients and professionals alike.
+A production-oriented, privacy-preserving Retrieval-Augmented Generation (RAG) system engineered for clinical documents and laboratory reports. Built with **FastAPI**, **Streamlit**, **ChromaDB**, **BM25**, and **LangChain**, featuring hybrid retrieval, adaptive query routing, clinical entity extraction, automated PHI redaction, and quantitative evaluation metrics.
 
-## 2. Solution
-This project is an AI-powered RAG (Retrieval-Augmented Generation) assistant that allows users to upload healthcare PDFs, intelligently extracts the text (falling back to OCR for scanned images), and lets users ask questions in natural language. The system then finds the exact context and answers the question while citing the source document and page number.
+---
 
-## 3. Features
-- **PDF Upload**: Easy web interface to upload medical PDFs.
-- **OCR for Scanned PDFs**: Automatically detects scanned documents and uses Tesseract OCR to read the text.
-- **Text Cleaning & Chunking**: Preprocesses text to remove noise and splits it intelligently using LangChain.
-- **Embeddings & ChromaDB**: Converts text into vector embeddings using OpenAI and stores them locally via ChromaDB.
-- **Semantic Search**: Understands the meaning of your question to retrieve the most relevant sections of your documents.
-- **RAG + GPT Answers**: Uses the retrieved context to generate an accurate, grounded answer using OpenAI's GPT.
-- **Source Citations**: Clearly shows which document and page the answer came from to prevent hallucinations.
-- **FastAPI Backend & Simple Web Interface**: A robust REST API serving a clean, beginner-friendly HTML/JS frontend.
+## Architecture and Pipeline Overview
 
-## 4. Architecture
-
-```text
-PDF
- ↓
-PDF Text Extraction (PyMuPDF)
- ↓
-OCR if needed (Tesseract)
- ↓
-Text Cleaning
- ↓
-Chunking (LangChain)
- ↓
-Embeddings (OpenAI)
- ↓
-ChromaDB (Vector Database)
- ↓
-Similarity Search
- ↓
-Relevant Context
- ↓
-GPT (OpenAI)
- ↓
-Answer + Sources (FastAPI -> Frontend)
+```
+Clinical PDF
+    │
+    ▼
+[PyMuPDF / OCR Fallback]
+    │
+    ▼
+[PHI / PII Redaction Layer] ────► Mask Patient Demographics (HIPAA Alignment)
+    │
+    ▼
+[Medical Named Entity Recognition] ──► Extract Clinical Terms & Lab Markers
+    │
+    ▼
+[Healthcare-Aware Chunking] ────► Retain Table Cohesion & Metadata
+    │
+    ├──► Dense Embeddings (HuggingFace all-MiniLM-L6-v2) ──► ChromaDB
+    └──► Sparse Lexical Index ──────────────────────────────► BM25
+                                                                 │
+User Query                                                       │
+    │                                                            │
+    ▼                                                            │
+[Adaptive Query Router] ──► Classify (FACTOID / AGGREGATION / IRRELEVANT)
+    │                       - FACTOID: Standard Top-K window
+    │                       - AGGREGATION: 3x Recall expansion
+    │                       - IRRELEVANT: Pre-retrieval guardrail block
+    │
+    ▼
+[Hybrid Retrieval Engine] ◄──────────────────────────────────────┘
+    ├── BM25 Keyword Search (Exact numerical lab matches)
+    └── Dense Semantic Search (Conceptual disease/symptom matching)
+            │
+            ▼
+    [Reciprocal Rank Fusion (RRF)] ──► Score-invariant Rank Blending
+            │
+            ▼
+[LLM Generation + Structured Output] (Groq / OpenAI / Gemini)
+    │
+    ├── Schema-Validated Output (Pydantic `MedicalAnswer`)
+    │   ├── Verified Response Content
+    │   ├── Confidence Level (HIGH / MEDIUM / LOW)
+    │   ├── Extracted Clinical Entities
+    │   └── Doctor Review Advisory Flag
+    │
+    ▼
+[Evaluation & Observability Engine]
+    ├── Faithfulness Score (Factual Claim Grounding)
+    ├── Context Precision Metric
+    └── End-to-End Latency Logging (JSONL)
 ```
 
-## 5. Technologies
-- **Python 3.11+**
-- **FastAPI** (Backend framework)
-- **LangChain** (RAG orchestration & chunking)
-- **ChromaDB** (Local Vector Database)
-- **OpenAI API** (Embeddings and LLM)
-- **PyMuPDF / fitz** (PDF processing)
-- **Tesseract OCR** (Image-to-text for scanned PDFs)
+---
 
-## 6. Installation
-Open your terminal and run the following commands:
+## Core Technical Capabilities
+
+| Capability | Engineering Implementation | Design Rationale |
+| :--- | :--- | :--- |
+| **Hybrid Search + RRF** | Combines **BM25 Okapi** with **ChromaDB** dense embeddings via **Reciprocal Rank Fusion (RRF)**. | Dense models struggle with exact numeric metrics (e.g. `14 g/dl` vs `11 g/dl`). BM25 guarantees precision for numerical lab thresholds. |
+| **Adaptive Query Routing** | Triage classification classifies incoming questions into `FACTOID`, `AGGREGATION`, or `IRRELEVANT`. | Aggregation questions (e.g., *"Are there any abnormal values?"*) require high recall, while factoids require high precision. Irrelevant queries are blocked prior to retrieval. |
+| **PHI / PII Redaction** | Regex redaction cleans SSNs, phone numbers, and email patterns prior to vector storage. | Mitigates data leakage risks in compliance with HIPAA privacy standards. |
+| **Clinical NER** | Automatically identifies medical markers (`hemoglobin`, `rbc`, `glucose`, `hba1c`, etc.) and attaches them to chunk metadata. | Enhances metadata filtering and search index granularity. |
+| **Structured Output** | Powered by Pydantic schemas (`MedicalAnswer`). | Guarantees deterministic JSON contracts for production frontends, complete with self-assessed confidence and clinical review flags. |
+| **Live RAG Metrics** | Deterministic evaluation of **Context Precision**, **Faithfulness**, and **Pipeline Latency** logged per interaction. | Provides quantitative visibility into answer grounding and latency trends. |
+| **Integrated Demo Workflow** | One-click ingestion directly parses and embeds sample laboratory reports. | Enables frictionless evaluation and verification during technical reviews. |
+
+---
+
+## Technology Stack
+
+- **Backend:** FastAPI, Uvicorn, Pydantic v2
+- **Frontend:** Streamlit with custom CSS theme & metrics dashboard
+- **Orchestration:** LangChain, LangChain-Community, LangChain-Groq
+- **Vector & Lexical Search:** ChromaDB (Local persistent), HuggingFace Embeddings (`all-MiniLM-L6-v2`), Rank-BM25
+- **Document Ingestion:** PyMuPDF (fitz), Tesseract OCR fallback (pytesseract)
+- **Supported Models:** Groq (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`), OpenAI (`gpt-4o-mini`), Google Gemini (`gemini-1.5-flash`)
+
+---
+
+## Quickstart Guide
+
+### 1. Clone & Set Up Environment
 ```bash
-# Clone or navigate to the project directory
-cd healthcare-rag-assistant
+git clone https://github.com/your-username/Healthcare-Document-RAG-Assistant.git
+cd Healthcare-Document-RAG-Assistant
 
-# Create a virtual environment (recommended)
+# Create and activate virtual environment
 python -m venv venv
-venv\Scripts\activate  # On Windows
+venv\Scripts\activate   # Windows
+# source venv/bin/activate # Linux/Mac
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-## 7. Environment Setup
-Create a `.env` file in the root folder based on `.env.example`:
+### 2. Configure Environment Variables
+Create a `.env` file in the root directory (optional defaults are already configured in `app/config.py`):
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_CHAT_MODEL=gpt-4o-mini
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-
+OPENAI_API_KEY=your_key_here
 CHUNK_SIZE=800
 CHUNK_OVERLAP=100
 TOP_K=4
-
-OCR_ENABLED=true
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
-*Note: Replace `your_openai_api_key_here` with a valid OpenAI API key. Ensure `TESSERACT_CMD` points to your correct Tesseract installation path.*
 
-## 8. Tesseract Installation (Windows)
-1. Download the Windows installer from the [UB-Mannheim Tesseract GitHub](https://github.com/UB-Mannheim/tesseract/wiki).
-2. Install it (usually to `C:\Program Files\Tesseract-OCR`).
-3. The `.env` file in this project automatically points to this default directory.
-
-## 9. Running the Project
-Start the FastAPI application using Uvicorn:
+### 3. Launch Application
+A single command boots up both the **FastAPI backend (port 8000)** and the **Streamlit dashboard (port 8501)**:
 ```bash
 python run.py
 ```
-Open your browser and navigate to: http://127.0.0.1:8000
-
-## 10. API Documentation
-FastAPI automatically generates interactive Swagger API documentation.
-Once the server is running, visit: http://127.0.0.1:8000/docs
-Here you can directly test the `/upload`, `/ask`, and `/documents` endpoints.
-
-## 11. Example Questions
-I have included a demo PDF (`static/hemoglobin-report-format.pdf`) in the project for testing. It can also be downloaded directly from the web interface!
-
-Upload it in the web interface and try asking:
-- *"What is the hemoglobin level?"*
-- *"Are there any abnormal values mentioned?"*
-- *"What date was the test conducted?"*
-
-## 12. Limitations
-- **Educational Only**: This is an educational project and is **not** a substitute for professional medical advice or diagnosis.
-- **Local Storage**: It uses local ChromaDB. In an enterprise system, a cloud vector database (like Pinecone or Milvus) would be used.
-- **Language**: Currently optimized primarily for English medical documents.
-
-## 13. Future Improvements
-- Add conversational memory (chat history) so follow-up questions work better.
-- Implement streaming responses for faster user feedback.
-- Support for other file types like DOCX or Images directly.
-- Add user authentication to separate documents per user.
+Open your browser to `http://localhost:8501`.
 
 ---
 
+## End-to-End Evaluation Workflow
+
+1. Select your LLM Provider (e.g., **Groq**) and paste your API key in the sidebar.
+2. Click **Load Demo Report (Hemoglobin Lab)** in the sidebar.
+3. Common test queries:
+   - *"What is the hemoglobin level?"* -> Routed as `FACTOID`, answers `14 g/dl`.
+   - *"Are there any abnormal values?"* -> Routed as `AGGREGATION`, verifies reference ranges (`13 - 17 g/dl`).
+   - *"Write a poem about space."* -> Routed as `IRRELEVANT`, blocked by triage guardrail.
+
+---
+
+## Repository Structure
+
+```
+Healthcare-Document-RAG-Assistant/
+├── app/
+│   ├── __init__.py
+│   ├── config.py             # Environment configuration & TF guardrails
+│   ├── schemas.py            # Pydantic structured output models
+│   ├── main.py               # FastAPI REST API endpoints
+│   ├── rag.py                # Core RAG pipeline orchestrator
+│   ├── hybrid_retriever.py   # BM25 + Dense RRF fusion retriever
+│   ├── query_router.py       # Triage classifier (Factoid/Aggregation/Irrelevant)
+│   ├── phi_redactor.py       # HIPAA-aligned PHI/PII redaction
+│   ├── medical_ner.py        # Clinical entity extraction
+│   ├── text_processor.py     # Clean chunking with metadata tagging
+│   ├── vector_store.py       # ChromaDB persistence & singleton embeddings
+│   ├── pdf_processor.py      # PyMuPDF parser
+│   ├── ocr.py                # Tesseract OCR fallback
+│   └── metrics.py            # Context Precision & Faithfulness evaluation
+├── sample_documents/
+│   └── hemoglobin-report-format.pdf # Standard test document
+├── tests/
+│   ├── test_api.py           # FastAPI endpoint tests
+│   └── test_text.py          # Processing and chunking tests
+├── streamlit_app.py          # Interactive web UI
+├── run.py                    # Dual-process launcher
+├── requirements.txt          # Python dependencies
+└── README.md                 # Project documentation
+```
+
+---
+
+## Disclaimer
+*This system is intended for document intelligence and educational research purposes. It is not a certified medical device and does not replace professional clinical diagnosis or judgment.*

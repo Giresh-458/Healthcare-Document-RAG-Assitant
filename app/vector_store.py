@@ -1,3 +1,7 @@
+import os
+os.environ["USE_TF"] = "0"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import chromadb
 from langchain_huggingface import HuggingFaceEmbeddings
 from app.config import TOP_K
@@ -9,12 +13,17 @@ chroma_client = chromadb.PersistentClient(path="./data/chroma")
 # Create or get collection
 collection = chroma_client.get_or_create_collection(name="healthcare_documents")
 
+_embeddings_instance = None
+
 def get_embeddings_model():
     """
-    Returns the HuggingFace embeddings model instance.
+    Returns the HuggingFace embeddings model instance (cached).
     This runs entirely locally and for free. No API key required!
     """
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    global _embeddings_instance
+    if _embeddings_instance is None:
+        _embeddings_instance = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return _embeddings_instance
 
 def add_documents(chunks: List[Dict]):
     """

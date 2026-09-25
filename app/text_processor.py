@@ -2,6 +2,8 @@ import re
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import CHUNK_SIZE, CHUNK_OVERLAP
 from typing import List, Dict
+from app.phi_redactor import PHIRedactor
+from app.medical_ner import MedicalNER
 
 def clean_text(text: str) -> str:
     """
@@ -17,13 +19,7 @@ def clean_text(text: str) -> str:
 def chunk_text(pages: List[Dict]) -> List[Dict]:
     """
     Splits text into smaller chunks for embeddings.
-    Keeps metadata (document_name, page) attached to each chunk.
-    
-    Args:
-        pages: A list of dicts with keys 'text', 'page', and 'document_name'.
-        
-    Returns:
-        A list of chunk dicts containing 'text' and 'metadata'.
+    Applies PII/PHI redaction and extracts medical entities as metadata.
     """
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
@@ -33,17 +29,26 @@ def chunk_text(pages: List[Dict]) -> List[Dict]:
 
     chunks = []
     for page_data in pages:
-        cleaned_text = clean_text(page_data["text"])
+        # Phase 2: Redact PHI before storing
+        redacted_text = PHIRedactor.redact(page_data["text"])
+        
+        cleaned_text = clean_text(redacted_text)
         if not cleaned_text:
             continue
 
         page_chunks = text_splitter.split_text(cleaned_text)
         for chunk in page_chunks:
+            # Phase 2: Extract medical entities for metadata
+            entities = MedicalNER.extract_entities(chunk)
+            # Join into string so ChromaDB can store it in metadata
+            entities_str = ",".join(entities) if entities else "none"
+            
             chunks.append({
                 "text": chunk,
                 "metadata": {
                     "document_name": page_data["document_name"],
-                    "page": page_data["page"]
+                    "page": page_data["page"],
+                    "medical_entities": entities_str
                 }
             })
 

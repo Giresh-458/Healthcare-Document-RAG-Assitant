@@ -1,5 +1,10 @@
+import time
 from langchain_core.messages import HumanMessage, SystemMessage
-from app.vector_store import search_documents
+from app.hybrid_retriever import HybridRetriever
+from app.metrics import RagMetrics
+from app.query_router import QueryRouter
+from app.config import TOP_K
+from app.schemas import MedicalAnswer
 from typing import Dict, Any
 
 def get_llm(provider: str, api_key: str):
@@ -22,15 +27,34 @@ def get_llm(provider: str, api_key: str):
 def answer_question(question: str, provider: str, api_key: str) -> Dict[str, Any]:
     """
     Retrieves relevant chunks and asks the selected AI to answer the question
-    based ONLY on the context.
+    based ONLY on the context. Now with basic evaluation metrics.
     """
-    # 1. Retrieve relevant chunks (now uses free local embeddings!)
-    relevant_chunks = search_documents(question)
+    start_time = time.time()
+    chat = get_llm(provider, api_key)
+    
+    # 1. Route the Query (Phase 4 Adaptive Router)
+    route = QueryRouter.classify(question, chat)
+    
+    if route == "IRRELEVANT":
+        latency = round(time.time() - start_time, 2)
+        return {
+            "answer": "This question does not appear to be related to the uploaded healthcare documents. Please ask a medical or report-related question.",
+            "sources": [],
+            "metrics": {"latency_sec": latency, "context_precision": 0, "faithfulness": 0, "retrieved_chunks": 0},
+            "route": route
+        }
+        
+    # Dynamically adjust retrieval parameters
+    k_value = TOP_K * 3 if route == "AGGREGATION" else TOP_K
+    
+    # 2. Retrieve relevant chunks using Phase 3 Hybrid Search (BM25 + Dense + RRF)
+    relevant_chunks = HybridRetriever.search(question, top_k=k_value)
 
     if not relevant_chunks:
         return {
             "answer": "I could not find any uploaded documents or relevant context.",
-            "sources": []
+            "sources": [],
+            "metrics": None
         }
 
     # 2. Prepare the context
@@ -50,13 +74,32 @@ def answer_question(question: str, provider: str, api_key: str) -> Dict[str, Any
 
     user_prompt = f"Context documents:\n{context_text}\n\nQuestion: {question}"
 
-    # 4. Call dynamically selected AI Provider
-    chat = get_llm(provider, api_key)
-    
-    response = chat.invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
-    ])
+    # 4. Call dynamically selected AI Provider with Structured Output
+    try:
+        structured_llm = chat.with_structured_output(MedicalAnswer)
+        structured_response = structured_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ])
+        
+        answer_text = structured_response.answer
+        structured_data = {
+            "confidence": structured_response.confidence,
+            "medical_entities": structured_response.medical_entities,
+            "requires_doctor_review": structured_response.requires_doctor_review
+        }
+    except Exception as e:
+        # Graceful fallback if the specific provider model struggles with tool-calling
+        response = chat.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ])
+        answer_text = response.content
+        structured_data = {
+            "confidence": "unknown", 
+            "medical_entities": [], 
+            "requires_doctor_review": True
+        }
 
     # 5. Format sources
     sources_list = []
@@ -70,7 +113,14 @@ def answer_question(question: str, provider: str, api_key: str) -> Dict[str, Any
             sources_list.append({"document": doc, "page": page})
             seen.add(source_key)
 
+    # 6. Calculate Metrics (Phase 6 feature)
+    latency = round(time.time() - start_time, 2)
+    metrics = RagMetrics.log_metrics(question, answer_text, relevant_chunks, latency)
+
     return {
-        "answer": response.content,
-        "sources": sources_list
+        "answer": answer_text,
+        "sources": sources_list,
+        "metrics": metrics,
+        "route": route,
+        "structured_data": structured_data
     }

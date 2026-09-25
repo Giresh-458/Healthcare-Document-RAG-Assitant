@@ -20,3 +20,5 @@ langchain-google-genai
 sentence-transformers
 
 streamlit
+rank-bm25
+requests
