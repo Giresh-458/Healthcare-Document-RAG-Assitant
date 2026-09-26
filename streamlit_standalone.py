@@ -74,7 +74,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Document Management")
-    st.caption("Private Session ID: " + st.session_state.session_id[:8])
 
     if st.button("Load Demo Report (Hemoglobin Lab)", use_container_width=True):
         demo_path = os.path.join("sample_documents", "hemoglobin-report-format.pdf")
