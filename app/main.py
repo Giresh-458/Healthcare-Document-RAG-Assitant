@@ -56,12 +56,17 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
     
     # PDF Processing Pipeline
     pages = process_pdf(file_path, safe_filename)
+    
+    # Enforce a 15-page limit to prevent OOM
+    if len(pages) > 15:
+        pages = pages[:15]
+        
     chunks = chunk_text(pages)
     
     # Store to Vector DB
     add_documents(chunks, safe_session)
     
-    return {"message": "Upload successful", "filename": safe_filename, "chunks": len(chunks)}
+    return {"message": "Upload successful", "filename": safe_filename, "chunks": len(chunks), "pages_processed": len(pages)}
 
 @app.post("/ask")
 async def ask_question_endpoint(req: AskRequest):

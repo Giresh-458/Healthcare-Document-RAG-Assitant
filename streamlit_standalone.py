@@ -85,19 +85,32 @@ with st.sidebar:
                 add_documents(chunks, "global")
                 st.success("Demo report loaded successfully.")
 
-    uploaded_file = st.file_uploader("Upload PDF", type=["pdf"], label_visibility="collapsed")
+    uploaded_file = st.file_uploader("Upload PDF (Max 5MB)", type=["pdf"], label_visibility="collapsed")
     if uploaded_file:
-        if st.button("Upload Document", use_container_width=True):
-            with st.spinner("Processing document..."):
-                safe_name = uploaded_file.name.replace(" ", "_")
-                file_path = f"data/uploads/{st.session_state.session_id}_{safe_name}"
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getvalue())
-                
-                pages = process_pdf(file_path, safe_name)
-                chunks = chunk_text(pages)
-                add_documents(chunks, st.session_state.session_id)
-                st.success(f"{safe_name} uploaded securely.")
+        # Enforce a 5MB file size limit for free-tier RAM safety
+        if uploaded_file.size > 5 * 1024 * 1024:
+            st.error("⚠️ File is too large! Please upload a clinical report smaller than 5MB to prevent free-tier memory crashes.")
+        else:
+            if st.button("Upload Document", use_container_width=True):
+                with st.spinner("Processing document..."):
+                    safe_name = uploaded_file.name.replace(" ", "_")
+                    file_path = f"data/uploads/{st.session_state.session_id}_{safe_name}"
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getvalue())
+                    
+                    try:
+                        pages = process_pdf(file_path, safe_name)
+                        
+                        # Enforce a page limit (e.g., 15 pages) to prevent embedding memory spikes
+                        if len(pages) > 15:
+                            st.warning(f"⚠️ Document has {len(pages)} pages. Only the first 15 pages were processed to respect server limits.")
+                            pages = pages[:15]
+                            
+                        chunks = chunk_text(pages)
+                        add_documents(chunks, st.session_state.session_id)
+                        st.success(f"{safe_name} uploaded securely.")
+                    except Exception as e:
+                        st.error(f"Error processing PDF: {e}")
 
     st.markdown("---")
     st.markdown("### Chat Context")

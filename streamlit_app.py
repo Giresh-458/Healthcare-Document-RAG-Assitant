@@ -203,20 +203,23 @@ with st.sidebar:
             st.error("Demo file not found in sample_documents/ directory.")
 
     st.caption("Or upload custom clinical PDF:")
-    uploaded_file = st.file_uploader("Upload PDF", type=["pdf"], label_visibility="collapsed")
+    uploaded_file = st.file_uploader("Upload PDF (Max 5MB)", type=["pdf"], label_visibility="collapsed")
     if uploaded_file:
-        if st.button("Upload Document", use_container_width=True):
-            with st.spinner("Processing document..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-                data = {"session_id": st.session_state.session_id}
-                try:
-                    res = requests.post(f"{API_URL}/upload", files=files, data=data)
-                    if res.status_code == 200:
-                        st.success(f"{uploaded_file.name} uploaded securely to your private session.")
-                    else:
-                        st.error(f"Upload error: {res.text}")
-                except:
-                    st.error("Backend offline.")
+        if uploaded_file.size > 5 * 1024 * 1024:
+            st.error("⚠️ File is too large! Please upload a clinical report smaller than 5MB.")
+        else:
+            if st.button("Upload Document", use_container_width=True):
+                with st.spinner("Processing document..."):
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+                    data = {"session_id": st.session_state.session_id}
+                    try:
+                        res = requests.post(f"{API_URL}/upload", files=files, data=data)
+                        if res.status_code == 200:
+                            st.success(f"{uploaded_file.name} uploaded securely to your private session.")
+                        else:
+                            st.error(f"Upload error: {res.text}")
+                    except:
+                        st.error("Backend offline.")
 
     st.markdown("---")
     st.markdown("### Chat Context")
