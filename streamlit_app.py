@@ -348,8 +348,12 @@ with tab1:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                if not api_key:
-                    st.error("Please provide an API key in the sidebar configuration to proceed.")
+                if not docs:
+                    st.error("⚠️ Please upload a document or load the demo report first.")
+                elif not docs_to_send:
+                    st.warning("⚠️ Please select at least one document from the 'Document Filter' dropdown in the sidebar to search.")
+                elif not api_key:
+                    st.error("⚠️ Please provide an API key in the sidebar configuration to proceed.")
                 else:
                     with st.spinner("Routing query, retrieving context, generating response..."):
                         payload = {
