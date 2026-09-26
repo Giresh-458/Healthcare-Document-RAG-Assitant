@@ -20,9 +20,10 @@ def main():
     time.sleep(2)  # Give backend a moment to initialize
     
     # 2. Start Streamlit Frontend
-    print("[INFO] Starting Streamlit frontend on http://localhost:8501...")
+    streamlit_port = os.environ.get("PORT", "8501")
+    print(f"[INFO] Starting Streamlit frontend on port {streamlit_port}...")
     frontend = subprocess.Popen(
-        [sys.executable, "-m", "streamlit", "run", "streamlit_app.py"],
+        [sys.executable, "-m", "streamlit", "run", "streamlit_app.py", "--server.port", streamlit_port, "--server.address", "0.0.0.0"],
         stdout=sys.stdout,
         stderr=sys.stderr
     )
