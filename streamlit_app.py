@@ -3,6 +3,7 @@ import requests
 import os
 import base64
 import uuid
+import html
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -236,7 +237,7 @@ with st.sidebar:
             
             st.markdown("**Currently Indexed:**")
             for d in docs:
-                st.markdown(f'<div class="doc-item">{d}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="doc-item">{html.escape(str(d))}</div>', unsafe_allow_html=True)
         else:
             docs_to_send = None
             st.caption("No documents indexed yet.")
@@ -303,13 +304,13 @@ def render_assistant_extras(structured_data, route, metrics, sources):
     # Entity tags
     entities = (structured_data or {}).get("medical_entities", [])
     if entities:
-        tags_html = " ".join([f'<span class="entity-tag">{e}</span>' for e in entities])
+        tags_html = " ".join([f'<span class="entity-tag">{html.escape(str(e))}</span>' for e in entities])
         st.markdown(f"**Entities Identified:** {tags_html}", unsafe_allow_html=True)
 
     # Source chips
     if sources:
         with st.expander("Source Citations"):
-            chips = "".join([f'<span class="source-chip">{s["document"]} | Page {s["page"]}</span>' for s in sources])
+            chips = "".join([f'<span class="source-chip">{html.escape(str(s["document"]))} | Page {html.escape(str(s["page"]))}</span>' for s in sources])
             st.markdown(chips, unsafe_allow_html=True)
 
 

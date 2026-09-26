@@ -35,23 +35,33 @@ class AskRequest(BaseModel):
 def health_check():
     return {"status": "ok"}
 
+import re
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize strings to prevent directory traversal attacks."""
+    return re.sub(r'[^a-zA-Z0-9_\-\.]', '_', os.path.basename(name))
+
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...), session_id: str = Form("global")):
-    if not file.filename.endswith(".pdf"):
+    if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
-    file_path = f"data/uploads/{session_id}_{file.filename}"
+    # SECURITY: Prevent Path Traversal Attacks
+    safe_session = sanitize_filename(session_id)
+    safe_filename = sanitize_filename(file.filename)
+    
+    file_path = os.path.join("data", "uploads", f"{safe_session}_{safe_filename}")
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
     # PDF Processing Pipeline
-    pages = process_pdf(file_path, file.filename)
+    pages = process_pdf(file_path, safe_filename)
     chunks = chunk_text(pages)
     
     # Store to Vector DB
-    add_documents(chunks, session_id)
+    add_documents(chunks, safe_session)
     
-    return {"message": "Upload successful", "filename": file.filename, "chunks": len(chunks)}
+    return {"message": "Upload successful", "filename": safe_filename, "chunks": len(chunks)}
 
 @app.post("/ask")
 async def ask_question_endpoint(req: AskRequest):
