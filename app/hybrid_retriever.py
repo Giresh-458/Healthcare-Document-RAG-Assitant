@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from rank_bm25 import BM25Okapi
 from app.vector_store import collection, get_embeddings_model
 from app.config import TOP_K
@@ -10,9 +10,20 @@ class HybridRetriever:
     """
     
     @staticmethod
-    def _get_all_chunks() -> List[Dict]:
-        """Fetches all chunks from ChromaDB to build the in-memory BM25 index."""
-        results = collection.get()
+    def _get_all_chunks(document_names: Optional[List[str]] = None) -> List[Dict]:
+        """Fetches chunks from ChromaDB to build the in-memory BM25 index."""
+        where_clause = None
+        if document_names:
+            if len(document_names) == 1:
+                where_clause = {"document_name": document_names[0]}
+            elif len(document_names) > 1:
+                where_clause = {"document_name": {"$in": document_names}}
+        
+        if where_clause:
+            results = collection.get(where=where_clause)
+        else:
+            results = collection.get()
+            
         chunks = []
         if results and results.get("documents"):
             for doc, meta, doc_id in zip(results["documents"], results["metadatas"], results["ids"]):
@@ -24,8 +35,8 @@ class HybridRetriever:
         return chunks
 
     @staticmethod
-    def search(question: str, top_k: int = TOP_K) -> List[Dict]:
-        chunks = HybridRetriever._get_all_chunks()
+    def search(question: str, top_k: int = TOP_K, document_names: Optional[List[str]] = None) -> List[Dict]:
+        chunks = HybridRetriever._get_all_chunks(document_names)
         if not chunks:
             return []
             
@@ -41,10 +52,18 @@ class HybridRetriever:
         embeddings = get_embeddings_model()
         query_embedding = embeddings.embed_query(question)
         
+        where_clause = None
+        if document_names:
+            if len(document_names) == 1:
+                where_clause = {"document_name": document_names[0]}
+            elif len(document_names) > 1:
+                where_clause = {"document_name": {"$in": document_names}}
+        
         # Query ALL documents to get global dense ranks for RRF
         dense_results = collection.query(
             query_embeddings=[query_embedding],
-            n_results=len(chunks)
+            n_results=len(chunks),
+            where=where_clause
         )
         
         # Map chunk IDs to their dense rank

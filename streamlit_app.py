@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import os
+import base64
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -208,15 +209,29 @@ with st.sidebar:
                     st.error("Backend offline.")
 
     st.markdown("---")
-    st.markdown("### Indexed Documents")
+    st.markdown("### Chat Context")
     try:
         docs = requests.get(f"{API_URL}/documents", timeout=3).json().get("documents", [])
         if docs:
+            st.caption("Search within specific documents:")
+            selected_chat_docs = st.multiselect(
+                "Document Filter", 
+                docs, 
+                default=[], 
+                placeholder="All Documents (Click to filter)", 
+                label_visibility="collapsed"
+            )
+            # If nothing is selected, we consider it "All Documents" (None in backend)
+            docs_to_send = selected_chat_docs if len(selected_chat_docs) > 0 else None
+            
+            st.markdown("**Currently Indexed:**")
             for d in docs:
                 st.markdown(f'<div class="doc-item">{d}</div>', unsafe_allow_html=True)
         else:
+            docs_to_send = None
             st.caption("No documents indexed yet.")
     except:
+        docs_to_send = None
         st.caption("Backend offline.")
 
     st.markdown("---")
@@ -288,58 +303,99 @@ def render_assistant_extras(structured_data, route, metrics, sources):
             st.markdown(chips, unsafe_allow_html=True)
 
 
-# ──────────────────────── CHAT INTERFACE ────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# ──────────────────────── TABS (CHAT & VIEWER) ────────────────────────
+tab1, tab2 = st.tabs(["💬 Chat Interface", "📄 Document Viewer"])
 
-# Render history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if msg["role"] == "assistant":
-            render_assistant_extras(
-                msg.get("structured_data", {}),
-                msg.get("route", ""),
-                msg.get("metrics", {}),
-                msg.get("sources", [])
-            )
+with tab1:
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# User input
-if prompt := st.chat_input("Ask about patient findings, lab values, or reference ranges..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    chat_container = st.container()
+    
+    # Render history
+    with chat_container:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                if msg["role"] == "assistant":
+                    render_assistant_extras(
+                        msg.get("structured_data", {}),
+                        msg.get("route", ""),
+                        msg.get("metrics", {}),
+                        msg.get("sources", [])
+                    )
 
-    with st.chat_message("assistant"):
-        if not api_key:
-            st.error("Please provide an API key in the sidebar configuration to proceed.")
+    # User input
+    if prompt := st.chat_input("Ask about patient findings, lab values, or reference ranges..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                if not api_key:
+                    st.error("Please provide an API key in the sidebar configuration to proceed.")
+                else:
+                    with st.spinner("Routing query, retrieving context, generating response..."):
+                        payload = {
+                            "question": prompt, 
+                            "provider": provider, 
+                            "api_key": api_key,
+                            "document_names": docs_to_send
+                        }
+                        try:
+                            res = requests.post(f"{API_URL}/ask", json=payload, timeout=60)
+                            if res.status_code == 200:
+                                data = res.json()
+                                answer = data.get("answer", "")
+                                sources = data.get("sources", [])
+                                metrics = data.get("metrics", {})
+                                route = data.get("route", "FACTOID")
+                                structured_data = data.get("structured_data", {})
+
+                                st.markdown(answer)
+                                render_assistant_extras(structured_data, route, metrics, sources)
+
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": answer,
+                                    "sources": sources,
+                                    "metrics": metrics,
+                                    "route": route,
+                                    "structured_data": structured_data
+                                })
+                            else:
+                                st.error(f"Backend error: {res.text}")
+                        except requests.exceptions.ConnectionError:
+                            st.error("Unable to connect to FastAPI backend at port 8000.")
+                        except Exception as e:
+                            st.error(f"Unexpected error: {e}")
+
+with tab2:
+    st.markdown("### View Indexed Documents")
+    try:
+        docs_res = requests.get(f"{API_URL}/documents", timeout=3)
+        if docs_res.status_code == 200:
+            doc_list = docs_res.json().get("documents", [])
+            if doc_list:
+                selected_doc = st.selectbox("Select a document to view", doc_list)
+                
+                # Check locations where the PDF might be stored locally
+                pdf_path = os.path.join("data", "uploads", selected_doc)
+                if not os.path.exists(pdf_path):
+                    pdf_path = os.path.join("sample_documents", selected_doc)
+                    
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as f:
+                        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                else:
+                    st.warning(f"Local file not found for rendering: {selected_doc}")
+            else:
+                st.info("No documents uploaded yet. Please upload a document or load the demo from the sidebar.")
         else:
-            with st.spinner("Routing query, retrieving context, generating response..."):
-                payload = {"question": prompt, "provider": provider, "api_key": api_key}
-                try:
-                    res = requests.post(f"{API_URL}/ask", json=payload, timeout=60)
-                    if res.status_code == 200:
-                        data = res.json()
-                        answer = data.get("answer", "")
-                        sources = data.get("sources", [])
-                        metrics = data.get("metrics", {})
-                        route = data.get("route", "FACTOID")
-                        structured_data = data.get("structured_data", {})
-
-                        st.markdown(answer)
-                        render_assistant_extras(structured_data, route, metrics, sources)
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                            "sources": sources,
-                            "metrics": metrics,
-                            "route": route,
-                            "structured_data": structured_data
-                        })
-                    else:
-                        st.error(f"Backend error: {res.text}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Unable to connect to FastAPI backend at port 8000.")
-                except Exception as e:
-                    st.error(f"Unexpected error: {e}")
+            st.error("Could not fetch documents from backend.")
+    except:
+        st.error("Backend offline. Cannot fetch documents.")

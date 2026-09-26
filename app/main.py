@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import shutil
+from typing import List, Optional
 
 from app.pdf_processor import process_pdf
 from app.text_processor import chunk_text
@@ -27,6 +28,7 @@ class AskRequest(BaseModel):
     question: str
     provider: str = "openai"
     api_key: str = ""
+    document_names: Optional[List[str]] = None
 
 @app.get("/health")
 def health_check():
@@ -56,7 +58,7 @@ async def ask_question_endpoint(req: AskRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
     try:
-        response = answer_question(req.question, req.provider, req.api_key)
+        response = answer_question(req.question, req.provider, req.api_key, req.document_names)
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
