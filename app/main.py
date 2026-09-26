@@ -29,17 +29,18 @@ class AskRequest(BaseModel):
     provider: str = "openai"
     api_key: str = ""
     document_names: Optional[List[str]] = None
+    session_id: str = "global"
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), session_id: str = Form("global")):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
-    file_path = f"data/uploads/{file.filename}"
+    file_path = f"data/uploads/{session_id}_{file.filename}"
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
@@ -48,7 +49,7 @@ async def upload_document(file: UploadFile = File(...)):
     chunks = chunk_text(pages)
     
     # Store to Vector DB
-    add_documents(chunks)
+    add_documents(chunks, session_id)
     
     return {"message": "Upload successful", "filename": file.filename, "chunks": len(chunks)}
 
@@ -58,11 +59,11 @@ async def ask_question_endpoint(req: AskRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
     try:
-        response = answer_question(req.question, req.provider, req.api_key, req.document_names)
+        response = answer_question(req.question, req.provider, req.api_key, req.document_names, req.session_id)
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents")
-def get_documents():
-    return {"documents": list_documents()}
+def get_documents(session_id: str = "global"):
+    return {"documents": list_documents(session_id)}

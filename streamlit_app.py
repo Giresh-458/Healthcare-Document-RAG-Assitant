@@ -2,8 +2,13 @@ import streamlit as st
 import requests
 import os
 import base64
+import uuid
 
 API_URL = "http://127.0.0.1:8000"
+
+# ──────────────────────── SESSION ISOLATION ────────────────────────
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
 # ──────────────────────── PAGE CONFIG ────────────────────────
 st.set_page_config(
@@ -174,16 +179,19 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Document Management")
+    st.caption("Each visitor has an isolated private session. Uploaded files cannot be seen by other users.")
 
     # ONE-CLICK DEMO LOADER
     if st.button("Load Demo Report (Hemoglobin Lab)", use_container_width=True):
         demo_path = os.path.join("sample_documents", "hemoglobin-report-format.pdf")
         if os.path.exists(demo_path):
-            with st.spinner("Indexing demo document: parsing, PHI redaction, NER, and embedding..."):
+            with st.spinner("Indexing demo document..."):
                 with open(demo_path, "rb") as f:
+                    # We pass "global" session_id for the demo so everyone can see it
                     files = {"file": ("hemoglobin-report-format.pdf", f.read(), "application/pdf")}
+                    data = {"session_id": "global"}
                     try:
-                        res = requests.post(f"{API_URL}/upload", files=files)
+                        res = requests.post(f"{API_URL}/upload", files=files, data=data)
                         if res.status_code == 200:
                             st.success("Demo report loaded successfully.")
                         else:
@@ -199,10 +207,11 @@ with st.sidebar:
         if st.button("Upload Document", use_container_width=True):
             with st.spinner("Processing document..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+                data = {"session_id": st.session_state.session_id}
                 try:
-                    res = requests.post(f"{API_URL}/upload", files=files)
+                    res = requests.post(f"{API_URL}/upload", files=files, data=data)
                     if res.status_code == 200:
-                        st.success(f"{uploaded_file.name} uploaded successfully.")
+                        st.success(f"{uploaded_file.name} uploaded securely to your private session.")
                     else:
                         st.error(f"Upload error: {res.text}")
                 except:
@@ -211,7 +220,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Chat Context")
     try:
-        docs = requests.get(f"{API_URL}/documents", timeout=3).json().get("documents", [])
+        # Fetch documents specific to THIS user's session (plus globals)
+        docs = requests.get(f"{API_URL}/documents?session_id={st.session_state.session_id}", timeout=3).json().get("documents", [])
         if docs:
             st.caption("Search within specific documents:")
             selected_chat_docs = st.multiselect(
@@ -342,7 +352,8 @@ with tab1:
                             "question": prompt, 
                             "provider": provider, 
                             "api_key": api_key,
-                            "document_names": docs_to_send
+                            "document_names": docs_to_send,
+                            "session_id": st.session_state.session_id
                         }
                         try:
                             res = requests.post(f"{API_URL}/ask", json=payload, timeout=60)

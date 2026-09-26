@@ -10,14 +10,31 @@ class HybridRetriever:
     """
     
     @staticmethod
-    def _get_all_chunks(document_names: Optional[List[str]] = None) -> List[Dict]:
+    def _get_all_chunks(document_names: Optional[List[str]] = None, session_id: str = "global") -> List[Dict]:
         """Fetches chunks from ChromaDB to build the in-memory BM25 index."""
-        where_clause = None
+        
+        # Build the session filter
+        if session_id == "global":
+            session_filter = None
+        else:
+            session_filter = {"$or": [{"session_id": session_id}, {"session_id": "global"}]}
+            
+        # Build the document filter
+        doc_filter = None
         if document_names:
             if len(document_names) == 1:
-                where_clause = {"document_name": document_names[0]}
+                doc_filter = {"document_name": document_names[0]}
             elif len(document_names) > 1:
-                where_clause = {"document_name": {"$in": document_names}}
+                doc_filter = {"document_name": {"$in": document_names}}
+        
+        # Combine filters
+        where_clause = None
+        if session_filter and doc_filter:
+            where_clause = {"$and": [session_filter, doc_filter]}
+        elif session_filter:
+            where_clause = session_filter
+        elif doc_filter:
+            where_clause = doc_filter
         
         if where_clause:
             results = collection.get(where=where_clause)
@@ -35,8 +52,8 @@ class HybridRetriever:
         return chunks
 
     @staticmethod
-    def search(question: str, top_k: int = TOP_K, document_names: Optional[List[str]] = None) -> List[Dict]:
-        chunks = HybridRetriever._get_all_chunks(document_names)
+    def search(question: str, top_k: int = TOP_K, document_names: Optional[List[str]] = None, session_id: str = "global") -> List[Dict]:
+        chunks = HybridRetriever._get_all_chunks(document_names, session_id)
         if not chunks:
             return []
             
@@ -52,12 +69,28 @@ class HybridRetriever:
         embeddings = get_embeddings_model()
         query_embedding = embeddings.embed_query(question)
         
-        where_clause = None
+        # Build the session filter
+        if session_id == "global":
+            session_filter = None
+        else:
+            session_filter = {"$or": [{"session_id": session_id}, {"session_id": "global"}]}
+            
+        # Build the document filter
+        doc_filter = None
         if document_names:
             if len(document_names) == 1:
-                where_clause = {"document_name": document_names[0]}
+                doc_filter = {"document_name": document_names[0]}
             elif len(document_names) > 1:
-                where_clause = {"document_name": {"$in": document_names}}
+                doc_filter = {"document_name": {"$in": document_names}}
+        
+        # Combine filters
+        where_clause = None
+        if session_filter and doc_filter:
+            where_clause = {"$and": [session_filter, doc_filter]}
+        elif session_filter:
+            where_clause = session_filter
+        elif doc_filter:
+            where_clause = doc_filter
         
         # Query ALL documents to get global dense ranks for RRF
         dense_results = collection.query(

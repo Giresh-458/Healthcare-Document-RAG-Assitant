@@ -24,7 +24,7 @@ def get_llm(provider: str, api_key: str):
     else:
         raise ValueError(f"Unsupported AI provider: {provider}")
 
-def answer_question(question: str, provider: str, api_key: str, document_names: list = None) -> Dict[str, Any]:
+def answer_question(question: str, provider: str, api_key: str, document_names: list = None, session_id: str = "global") -> Dict[str, Any]:
     """
     Retrieves relevant chunks and asks the selected AI to answer the question
     based ONLY on the context. Now with basic evaluation metrics.
@@ -48,7 +48,7 @@ def answer_question(question: str, provider: str, api_key: str, document_names: 
     k_value = TOP_K * 3 if route == "AGGREGATION" else TOP_K
     
     # 2. Retrieve relevant chunks using Phase 3 Hybrid Search (BM25 + Dense + RRF)
-    relevant_chunks = HybridRetriever.search(question, top_k=k_value, document_names=document_names)
+    relevant_chunks = HybridRetriever.search(question, top_k=k_value, document_names=document_names, session_id=session_id)
 
     if not relevant_chunks:
         return {
