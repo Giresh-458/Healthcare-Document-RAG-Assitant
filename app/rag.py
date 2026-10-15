@@ -40,7 +40,9 @@ def _source(chunk):
 def _all_hemoglobin_candidates(question: str, chunks: List[Dict], start_time: float):
     """Deterministic, transparent candidate scan; values still require source verification."""
     value_patterns = [
-        re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b[^\n]{0,80}?\b(\d{1,3}(?:\.\d+)?)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
+        # Keep the value adjacent to the lab label; don't mistake "13-17" reference ranges for results.
+        re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b\s*(?:[:=]\s*)?(\d{1,3}(?:\.\d+)?)(?!\s*[-–]\s*\d)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
+        re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b\s*\([^\)\n]{1,20}\)\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)(?!\s*[-–]\s*\d)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
         re.compile(r"\b(\d{1,3}(?:\.\d+)?)\s*(g\s*/\s*d?l|g\s*/\s*l)\s*(?:of\s+)?(?:hemoglobin|haemoglobin|hgb|hb)\b", re.I),
     ]
     rows, seen = [], set()
