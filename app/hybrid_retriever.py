@@ -66,10 +66,9 @@ class HybridRetriever:
 
         # BM25 lexical ranking. Keep punctuation-normalized tokens so common
         # numeric/unit spellings remain discoverable without external services.
-        tokenize = lambda value: __import__("re").findall(
-            r"[a-zA-Z]+|\d+(?:\.\d+)?|[a-zA-Z]+/ [a-zA-Z]+|[a-zA-Z]+/[a-zA-Z]+",
-            value.lower().replace(" ", " "),
-        )
+        def tokenize(value: str):
+            # Preserve numeric values and units as searchable lexical tokens.
+            return re.findall(r"[a-z]+|\\d+(?:\\.\\d+)?", value.lower())
         corpus = [tokenize(chunk["text"]) for chunk in chunks]
         query_tokens = tokenize(question)
         if not query_tokens:
