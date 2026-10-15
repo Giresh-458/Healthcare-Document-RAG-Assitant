@@ -112,6 +112,10 @@ APP_API_TOKEN=replace-with-a-long-random-token-for-shared-token-gating
 CORS_ALLOWED_ORIGINS=http://localhost:8501,http://127.0.0.1:8501
 ```
 
+### Testing
+
+Run the fast unit/API regression suite with `pip install -r requirements-test.txt` followed by `pytest -q`. Install `requirements.txt` for the full app, including local embedding and LLM-provider integrations. GitHub Actions runs compilation and the test suite on pull requests.
+
 ### 3. Launch Application
 A single command boots up both the **FastAPI backend (port 8000)** and the **Streamlit dashboard (port 8501)**:
 ```bash
