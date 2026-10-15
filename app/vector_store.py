@@ -50,7 +50,7 @@ def add_documents(chunks: List[Dict], session_id: str = "global"):
     # do not remove the currently indexed version of a document.
     vectors = get_embeddings_model().embed_documents(texts)
     where = {"$and": [{"session_id": session_id}, {"document_name": document_name}]}
-    previous_ids = collection.get(where=where, include=[]).get("ids", [])
+    previous_ids = collection.get(where=where, include=["metadatas"]).get("ids", [])
     collection.upsert(ids=ids, embeddings=vectors, metadatas=metadatas, documents=texts)
     current_ids = set(ids)
     stale_ids = [item for item in previous_ids if item not in current_ids]
