@@ -59,3 +59,14 @@ def test_api_token_gate_accepts_correct_token(monkeypatch):
     )
     assert response.status_code == 200
     assert "documents" in response.json()
+
+def test_upload_requires_token_when_configured(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "test-secret")
+    response = client.post(
+        "/upload",
+        files={"file": ("report.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        data={"session_id": "test-session"},
+    )
+    assert response.status_code == 401
