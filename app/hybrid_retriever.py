@@ -4,6 +4,7 @@ The lexical corpus is rebuilt from the selected session's indexed chunks per
 request. This is simple and correct for a prototype; for large corpora, replace
 it with a persistent lexical index and bounded candidate retrieval.
 """
+import re
 from typing import Dict, List, Optional
 
 from rank_bm25 import BM25Okapi
