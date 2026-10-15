@@ -195,3 +195,32 @@ def test_all_hemoglobin_scan_checks_all_chunks_and_reports_sources():
     assert "Patient A" in result["answer"]
     assert "Patient B" in result["answer"]
     assert len(result["sources"]) == 2
+
+
+def test_my_question_still_requires_verified_identity_even_with_selected_label(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "report.pdf", "patient_label": "Patient A"},
+    ])
+    response = client.post(
+        "/ask",
+        json={"question": "What is my hemoglobin level?", "patient_label": "Patient A", "session_id": "test-session"},
+    )
+    assert response.status_code == 200
+    assert response.json()["clarification_required"] is True
+
+
+def test_explicit_all_hemoglobin_query_is_not_blocked_as_ambiguous(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "a.pdf", "patient_label": "Patient A"},
+        {"document_id": "doc-b", "document_name": "b.pdf", "patient_label": "Patient B"},
+    ])
+    monkeypatch.setattr(main_module, "answer_question", lambda *args, **kwargs: {"route": "EXHAUSTIVE_HEMOGLOBIN_SCAN"})
+    response = client.post("/ask", json={"question": "List all hemoglobin levels across all patients", "session_id": "test-session"})
+    assert response.status_code == 200
+    assert response.json()["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
