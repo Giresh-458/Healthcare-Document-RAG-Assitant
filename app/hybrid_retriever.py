@@ -68,7 +68,7 @@ class HybridRetriever:
         # numeric/unit spellings remain discoverable without external services.
         def tokenize(value: str):
             # Preserve numeric values and units as searchable lexical tokens.
-            return re.findall(r"[a-z]+|\\d+(?:\\.\\d+)?", value.lower())
+            return re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.lower())
         corpus = [tokenize(chunk["text"]) for chunk in chunks]
         query_tokens = tokenize(question)
         if not query_tokens:
