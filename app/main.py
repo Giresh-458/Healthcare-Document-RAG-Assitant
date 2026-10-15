@@ -10,6 +10,7 @@ import uuid
 from typing import List, Literal, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -123,6 +124,28 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
         if os.path.exists(temp_path):
             os.remove(temp_path)
         await file.close()
+
+
+@app.get("/document-pdf", dependencies=[Depends(require_app_token)])
+def get_document_pdf(document_name: str, session_id: str = "global"):
+    """Serve an indexed PDF from the API's upload storage for the owning session."""
+    filename = _safe_component(document_name, "document name")
+    safe_session = _safe_component(session_id, "session_id")[:64]
+
+    # Require the name to be present in this session's index before serving a file.
+    if filename not in list_documents(safe_session):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    pdf_path = os.path.join(UPLOAD_DIR, f"{safe_session}_{filename}")
+    if not os.path.isfile(pdf_path):
+        raise HTTPException(status_code=404, detail="PDF file is unavailable")
+
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @app.post("/ask", dependencies=[Depends(require_app_token)])
