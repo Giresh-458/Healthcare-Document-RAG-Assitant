@@ -51,8 +51,8 @@ User Query                                                       │
     │
     ▼
 [Evaluation & Observability Engine]
-    ├── Faithfulness Score (Factual Claim Grounding)
-    ├── Context Precision Metric
+    ├── Query-token overlap heuristic
+    ├── Answer/context token overlap heuristic
     └── End-to-End Latency Logging (JSONL)
 ```
 
@@ -66,7 +66,7 @@ User Query                                                       │
 | **Adaptive Query Routing** | Triage classification classifies incoming questions into `FACTOID`, `AGGREGATION`, or `IRRELEVANT`. | Aggregation questions (e.g., *"Are there any abnormal values?"*) require high recall, while factoids require high precision. Irrelevant queries are blocked prior to retrieval. |
 | **PHI / PII Redaction** | Regex redaction cleans SSNs, phone numbers, and email patterns prior to vector storage. | Masks a limited set of patterns. This is not HIPAA compliance and can miss identifiers; use synthetic data unless a separately validated privacy process exists. |
 | **Clinical NER** | Automatically identifies medical markers (`hemoglobin`, `rbc`, `glucose`, `hba1c`, etc.) and attaches them to chunk metadata. | Enhances metadata filtering and search index granularity. |
-| **Structured Output** | Powered by Pydantic schemas (`MedicalAnswer`). | Guarantees deterministic JSON contracts for production frontends, complete with self-assessed confidence and clinical review flags. |
+| **Structured Output** | Powered by Pydantic schemas (`MedicalAnswer`). | Requests schema-validated structured responses; model-generated confidence is not calibrated and this is not production-ready. |
 | **Live RAG Metrics** | Heuristic token-overlap indicators and latency logging. The overlap values are not validated context-precision or faithfulness metrics. | Provides basic diagnostics only. Do not use token overlap as evidence of factual correctness or clinical safety. |
 | **Integrated Demo Workflow** | One-click ingestion directly parses and embeds sample laboratory reports. | Enables frictionless evaluation and verification during technical reviews. |
 
@@ -88,7 +88,7 @@ User Query                                                       │
 ### 1. Clone & Set Up Environment
 ```bash
 git clone https://github.com/Giresh-458/Healthcare-Document-RAG-Assitant.git
-cd Healthcare-Document-RAG-Assistant
+cd Healthcare-Document-RAG-Assitant
 
 # Create and activate virtual environment
 python -m venv venv
@@ -100,7 +100,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure Environment Variables
-Create a `.env` file in the root directory (optional defaults are already configured in `app/config.py`):
+Copy `.env.example` to `.env` and edit values as needed. Keep secrets out of Git:
 ```env
 OPENAI_API_KEY=your_key_here
 CHUNK_SIZE=800
@@ -108,6 +108,7 @@ CHUNK_OVERLAP=100
 TOP_K=4
 MAX_UPLOAD_BYTES=5242880
 MAX_PDF_PAGES=15
+APP_API_TOKEN=replace-with-a-long-random-token-for-shared-token-gating
 CORS_ALLOWED_ORIGINS=http://localhost:8501,http://127.0.0.1:8501
 ```
 
@@ -134,7 +135,7 @@ Open your browser to `http://localhost:8501`.
 ## Repository Structure
 
 ```
-Healthcare-Document-RAG-Assistant/
+Healthcare-Document-RAG-Assitant/
 ├── app/
 │   ├── __init__.py
 │   ├── config.py             # Environment configuration & TF guardrails
@@ -143,7 +144,7 @@ Healthcare-Document-RAG-Assistant/
 │   ├── rag.py                # Core RAG pipeline orchestrator
 │   ├── hybrid_retriever.py   # BM25 + Dense RRF fusion retriever
 │   ├── query_router.py       # Triage classifier (Factoid/Aggregation/Irrelevant)
-│   ├── phi_redactor.py       # HIPAA-aligned PHI/PII redaction
+│   ├── phi_redactor.py       # Best-effort PHI/PII pattern redaction
 │   ├── medical_ner.py        # Clinical entity extraction
 │   ├── text_processor.py     # Clean chunking with metadata tagging
 │   ├── vector_store.py       # ChromaDB persistence & singleton embeddings
@@ -163,6 +164,10 @@ Healthcare-Document-RAG-Assistant/
 
 ---
 
+## API token gate
+
+If `APP_API_TOKEN` is set, configure the same value in the API and Streamlit process environments. The UI sends it in the `X-App-Token` header. The health endpoint remains public for basic process checks. This is a shared-token demo gate, not user-level authentication. If the token is unset, the API endpoints are unauthenticated and should remain on a trusted local network.
+
 ## Disclaimer
 *This system is intended for document intelligence and educational research purposes. It is not a certified medical device and does not replace professional clinical diagnosis or judgment.*
 
@@ -171,8 +176,8 @@ Healthcare-Document-RAG-Assistant/
 
 - This repository is an educational prototype, not a clinical product or medical device.
 - PHI redaction uses regular expressions and is incomplete. It does not guarantee anonymization or HIPAA compliance. Use synthetic data for demos and tests.
-- Session IDs are isolation labels, not authentication. Do not expose this API to untrusted users without adding authentication, authorization, rate limiting, and deployment-specific security controls.
+- Session IDs are isolation labels, not authentication. `APP_API_TOKEN` optionally gates API endpoints with one shared token; it is not per-user identity or authorization. Do not expose this API to untrusted users without proper authentication/authorization, rate limiting, TLS, secrets management, and deployment-specific security controls.
 - Dense and BM25 candidate retrieval is bounded, but the BM25 index is still rebuilt from session chunks per request. For large corpora, introduce a persistent lexical index and benchmark it.
 - The displayed token-overlap values are heuristics only. Build a labelled dataset and measure retrieval recall/precision, answer correctness, citation support, abstention behavior, and latency before making quality claims.
 - Upload size and page limits are enforced by the API. Configure \`MAX_UPLOAD_BYTES\`, \`MAX_PDF_PAGES\`, and \`CORS_ALLOWED_ORIGINS\` for your deployment.
-- The project has not been validated for medical use. All generated answers require independent verification by qualified professionals.
+- The project has not been validated for medical use. Use synthetic documents only. Never treat generated answers, confidence labels, or overlap heuristics as clinical decisions; qualified professionals must independently verify any medical interpretation.
