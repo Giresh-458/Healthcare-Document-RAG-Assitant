@@ -4,13 +4,19 @@ The lexical corpus is rebuilt from the selected session's indexed chunks per
 request. This is simple and correct for a prototype; for large corpora, replace
 it with a persistent lexical index and bounded candidate retrieval.
 """
+import hashlib
 import re
+from collections import OrderedDict
 from typing import Dict, List, Optional
 
 from rank_bm25 import BM25Okapi
 
 from app.config import TOP_K
 from app.vector_store import collection, get_embeddings_model
+
+
+_BM25_CACHE = OrderedDict()
+_MAX_BM25_CACHE_ENTRIES = 8
 
 
 def _where_clause(document_names: Optional[List[str]], session_id: str):
@@ -64,16 +70,29 @@ class HybridRetriever:
         candidate_k = min(candidate_k, len(chunks))
         where = _where_clause(document_names, session_id)
 
-        # BM25 lexical ranking. Keep punctuation-normalized tokens so common
-        # numeric/unit spellings remain discoverable without external services.
+        # Cache the lexical index by corpus content. This avoids rebuilding BM25
+        # on every question when the selected session's indexed documents are unchanged.
         def tokenize(value: str):
-            # Preserve numeric values and units as searchable lexical tokens.
             return re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.lower())
-        corpus = [tokenize(chunk["text"]) for chunk in chunks]
+
+        fingerprint_source = "\n".join(
+            f"{chunk['id']}\0{chunk['text']}" for chunk in chunks
+        )
+        fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+        cached = _BM25_CACHE.get(fingerprint)
+        if cached is None:
+            corpus = [tokenize(chunk["text"]) for chunk in chunks]
+            bm25 = BM25Okapi(corpus)
+            _BM25_CACHE[fingerprint] = (bm25, corpus)
+            while len(_BM25_CACHE) > _MAX_BM25_CACHE_ENTRIES:
+                _BM25_CACHE.popitem(last=False)
+        else:
+            bm25, corpus = cached
+            _BM25_CACHE.move_to_end(fingerprint)
+
         query_tokens = tokenize(question)
         if not query_tokens:
             return []
-        bm25 = BM25Okapi(corpus)
         bm25_scores = bm25.get_scores(query_tokens)
         bm25_indices = sorted(
             range(len(chunks)), key=lambda i: bm25_scores[i], reverse=True
