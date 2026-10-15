@@ -190,7 +190,7 @@ with st.sidebar:
                 with open(demo_path, "rb") as f:
                     # We pass "global" session_id for the demo so everyone can see it
                     files = {"file": ("hemoglobin-report-format.pdf", f.read(), "application/pdf")}
-                    data = {"session_id": "global"}
+                    data = {"session_id": st.session_state.session_id}
                     try:
                         res = requests.post(f"{API_URL}/upload", files=files, data=data)
                         if res.status_code == 200:
@@ -290,10 +290,10 @@ def render_assistant_extras(structured_data, route, metrics, sources):
                 unsafe_allow_html=True
             )
         with cols[2]:
-            fp = (metrics or {}).get("faithfulness", "—")
+            fp = (metrics or {}).get("answer_context_token_overlap_heuristic", "—")
             st.markdown(
-                f'<div class="metric-card"><div class="label">Faithfulness</div>'
-                f'<div class="value high">{fp}</div></div>',
+                f'<div class="metric-card"><div class="label">Answer/context token overlap (heuristic)</div>'
+                f'<div class="value blue">{fp}</div></div>',
                 unsafe_allow_html=True
             )
         with cols[3]:
