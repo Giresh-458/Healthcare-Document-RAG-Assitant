@@ -397,7 +397,7 @@ with tab1:
 with tab2:
     st.markdown("### View Indexed Documents")
     try:
-        docs_res = requests.get(f"{API_URL}/documents?session_id={st.session_state.session_id}", timeout=3)
+        docs_res = requests.get(f"{API_URL}/documents", params={"session_id": st.session_state.session_id}, headers=_api_headers(), timeout=3)
         if docs_res.status_code == 200:
             doc_list = docs_res.json().get("documents", [])
             if doc_list:
