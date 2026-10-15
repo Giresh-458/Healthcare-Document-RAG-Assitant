@@ -1,25 +1,31 @@
+"""Best-effort PHI pattern redaction for demo data.
+
+IMPORTANT: this is not a de-identification system and does not establish HIPAA
+compliance. Use synthetic data unless a separately validated privacy process is
+in place. Regex patterns can both miss identifiers and redact legitimate values.
+"""
 import re
 
+
 class PHIRedactor:
-    """
-    Identifies and redacts Protected Health Information (PHI) like
-    Phone Numbers, SSNs, and Dates of Birth using regular expressions.
-    """
-    
-    # Regex patterns for common PHI
     PATTERNS = {
-        "PHONE": r'\b(\+\d{1,2}\s?)?1?\-?\.?\s?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b',
-        "SSN": r'\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b',
-        "EMAIL": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b'
+        "EMAIL": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+        "US_PHONE": re.compile(
+            r"(?<!\d)(?:\+?1[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]?\d{4}(?!\d)"
+        ),
+        "US_SSN": re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"),
+        "MRN_LABELLED": re.compile(
+            r"(?i)\b(?:medical record(?: number)?|mrn|patient id)\s*[:#-]?\s*[A-Z0-9-]{4,}\b"
+        ),
+        "DOB_LABELLED": re.compile(
+            r"(?i)\b(?:date of birth|dob)\s*[:#-]?\s*"
+            r"(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b"
+        ),
     }
 
     @classmethod
     def redact(cls, text: str) -> str:
-        redacted_text = text
-        for phi_type, pattern in cls.PATTERNS.items():
-            # Replace matches with [REDACTED_<TYPE>]
-            redacted_text = re.sub(pattern, f"[REDACTED_{phi_type}]", redacted_text)
-            
-        # Optional: Redact generic names using a simple heuristic if needed,
-        # but regex covers the most concrete PHI types for now.
-        return redacted_text
+        redacted = text
+        for label, pattern in cls.PATTERNS.items():
+            redacted = pattern.sub(f"[REDACTED_{label}]", redacted)
+        return redacted
