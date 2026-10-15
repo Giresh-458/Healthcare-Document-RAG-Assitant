@@ -74,7 +74,7 @@ def health_check():
 @app.post("/upload", dependencies=[Depends(require_app_token)])
 async def upload_document(file: UploadFile = File(...), session_id: str = Form("global")):
     filename = _safe_component(file.filename or "", "filename")
-    safe_session = _safe_component(session_id, "session_id")
+    safe_session = _safe_component(session_id, "session_id")[:64]
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     if file.size is not None and file.size > MAX_UPLOAD_BYTES:
@@ -130,7 +130,7 @@ async def ask_question_endpoint(req: AskRequest):
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-    session_id = _safe_component(req.session_id, "session_id")
+    session_id = _safe_component(req.session_id, "session_id")[:64]
     document_names = None
     if req.document_names is not None:
         if len(req.document_names) > 100:
