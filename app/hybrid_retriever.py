@@ -1,8 +1,6 @@
 """Hybrid lexical + semantic retrieval with Reciprocal Rank Fusion.
 
-The lexical corpus is rebuilt from the selected session's indexed chunks per
-request. This is simple and correct for a prototype; for large corpora, replace
-it with a persistent lexical index and bounded candidate retrieval.
+The selected session's chunks are loaded for each query, while the in-process BM25 index is cached by corpus fingerprint. Large corpora still need paginated or persistent lexical indexing.
 """
 import hashlib
 import re
