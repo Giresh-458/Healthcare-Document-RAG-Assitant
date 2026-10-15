@@ -78,6 +78,9 @@ def health_check():
 async def upload_document(file: UploadFile = File(...), session_id: str = Form("global"), patient_label: str = Form("")):
     filename = _safe_component(file.filename or "", "filename")
     safe_session = _safe_component(session_id, "session_id")[:64]
+    patient_label = (patient_label or "").strip()
+    if len(patient_label) > 128:
+        raise HTTPException(status_code=400, detail="Patient label must be 128 characters or fewer")
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     if file.size is not None and file.size > MAX_UPLOAD_BYTES:
@@ -176,9 +179,9 @@ async def ask_question_endpoint(req: AskRequest):
         if record["patient_label"] and record["patient_label"] != "unspecified"
     })
     asks_about_self = bool(re.search(r"\b(my|mine|myself)\b", question, re.IGNORECASE))
-    if asks_about_self and not patient_label:
+    if asks_about_self:
         return {
-            "answer": "I cannot infer which patient you are from uploaded files. Please specify the patient record you mean. A label in a PDF or upload form is not identity verification.",
+            "answer": "This prototype has no verified user identity or patient authorization, so I cannot safely answer “my” from an uploaded file or selected label. Ask about a specific patient record you are authorized to access, or add real identity and authorization controls.",
             "clarification_required": True,
             "available_patient_labels": available_labels,
             "sources": [],
