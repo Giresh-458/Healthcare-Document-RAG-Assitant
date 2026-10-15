@@ -181,7 +181,7 @@ If `APP_API_TOKEN` is set, configure the same value in the API and Streamlit pro
 - This repository is an educational prototype, not a clinical product or medical device.
 - PHI redaction uses regular expressions and is incomplete. It does not guarantee anonymization or HIPAA compliance. Use synthetic data for demos and tests.
 - Session IDs are isolation labels, not authentication. `APP_API_TOKEN` optionally gates API endpoints with one shared token; it is not per-user identity or authorization. Do not expose this API to untrusted users without proper authentication/authorization, rate limiting, TLS, secrets management, and deployment-specific security controls.
-- Dense and BM25 candidate retrieval is bounded, but the BM25 index is still rebuilt from session chunks per request. For large corpora, introduce a persistent lexical index and benchmark it.
+- Dense candidate retrieval is bounded and BM25 is cached in-process by corpus fingerprint. The selected session's chunks are still loaded for lexical search on each request; large corpora need paginated/persistent lexical indexing and benchmarking.
 - The displayed token-overlap values are heuristics only. Build a labelled dataset and measure retrieval recall/precision, answer correctness, citation support, abstention behavior, and latency before making quality claims.
 - Upload size and page limits are enforced by the API. Configure \`MAX_UPLOAD_BYTES\`, \`MAX_PDF_PAGES\`, and \`CORS_ALLOWED_ORIGINS\` for your deployment.
 - The project has not been validated for medical use. Use synthetic documents only. Never treat generated answers, confidence labels, or overlap heuristics as clinical decisions; qualified professionals must independently verify any medical interpretation.
