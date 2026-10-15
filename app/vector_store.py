@@ -8,7 +8,6 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 from typing import Dict, List
 
 import chromadb
-from langchain_huggingface import HuggingFaceEmbeddings
 
 chroma_client = chromadb.PersistentClient(path="./data/chroma")
 collection = chroma_client.get_or_create_collection(name="healthcare_documents")
@@ -16,14 +15,15 @@ _embeddings_instance = None
 
 
 def get_embeddings_model():
-    """Load the embedding model only once per process."""
+    """Load the optional embedding dependency and model only when retrieval needs it."""
     global _embeddings_instance
     if _embeddings_instance is None:
+        from langchain_huggingface import HuggingFaceEmbeddings
+
         _embeddings_instance = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
     return _embeddings_instance
-
 
 def _chunk_id(session_id: str, document_name: str, page: int, index: int) -> str:
     raw = f"{session_id}\0{document_name}\0{page}\0{index}".encode("utf-8")
