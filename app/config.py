@@ -21,4 +21,4 @@ TOP_K = int(os.getenv("TOP_K", 4))
 
 # OCR Config
 OCR_ENABLED = os.getenv("OCR_ENABLED", "true").lower() == "true"
-TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", "tesseract")
