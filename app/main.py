@@ -186,11 +186,20 @@ async def ask_question_endpoint(req: AskRequest):
             "route": "CLARIFICATION",
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
         }
-    if not patient_label and len(available_labels) > 1 and not req.document_ids and not req.document_names:
+    asks_multi_record = bool(re.search(r"\\b(all|every|across|each)\\b", question, re.IGNORECASE))
+    selected_records = [record for record in records if req.document_ids and record["document_id"] in req.document_ids]
+    selected_labels = {record["patient_label"] for record in selected_records if record["patient_label"] != "unspecified"}
+    ambiguous_patient_scope = (
+        not patient_label
+        and not asks_multi_record
+        and (len(available_labels) > 1 and not req.document_ids and not req.document_names
+             or len(selected_labels) > 1)
+    )
+    if ambiguous_patient_scope:
         return {
-            "answer": "These documents are labelled for multiple patients. Which patient's records should I use? Select a patient label in the chat context. I will not combine patient records for a single-patient question.",
+            "answer": "These records are labelled for multiple patients. Which patient's records should I use? Select a patient label or restrict the query to one upload record. I will not combine patient records for a single-patient question.",
             "clarification_required": True,
-            "available_patient_labels": available_labels,
+            "available_patient_labels": sorted(selected_labels or set(available_labels)),
             "sources": [],
             "metrics": {"retrieved_chunks": 0},
             "route": "CLARIFICATION",
