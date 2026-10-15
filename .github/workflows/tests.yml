@@ -24,4 +24,4 @@ jobs:
       - name: Compile Python files
         run: python -m compileall -q app tests streamlit_app.py streamlit_standalone.py run.py
       - name: Run tests
-        run: pytest -q
+        run: python -m pytest -q
