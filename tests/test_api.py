@@ -70,3 +70,50 @@ def test_upload_requires_token_when_configured(monkeypatch):
         data={"session_id": "test-session"},
     )
     assert response.status_code == 401
+
+
+def test_document_pdf_serves_indexed_session_file(tmp_path, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(main_module, "list_documents", lambda session_id: ["report.pdf"] if session_id == "session-a" else [])
+    (tmp_path / "session-a_report.pdf").write_bytes(b"%PDF-1.4 test")
+
+    response = client.get(
+        "/document-pdf",
+        params={"document_name": "report.pdf", "session_id": "session-a"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content == b"%PDF-1.4 test"
+
+
+def test_document_pdf_does_not_serve_other_sessions_file(tmp_path, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(main_module, "list_documents", lambda session_id: ["report.pdf"] if session_id == "session-a" else [])
+    (tmp_path / "session-a_report.pdf").write_bytes(b"%PDF-1.4 test")
+
+    response = client.get(
+        "/document-pdf",
+        params={"document_name": "report.pdf", "session_id": "session-b"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_document_pdf_requires_shared_token_when_configured(tmp_path, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "test-secret")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    response = client.get(
+        "/document-pdf",
+        params={"document_name": "report.pdf", "session_id": "session-a"},
+    )
+
+    assert response.status_code == 401
