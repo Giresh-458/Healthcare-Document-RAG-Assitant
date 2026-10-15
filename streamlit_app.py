@@ -180,7 +180,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Document Management")
-    st.caption("Each visitor has an isolated private session. Uploaded files cannot be seen by other users.")
+    st.caption("Documents are filtered by session ID in this prototype. Session IDs are not authentication; do not use with sensitive real patient data.")
 
     # ONE-CLICK DEMO LOADER
     if st.button("Load Demo Report (Hemoglobin Lab)", use_container_width=True):
