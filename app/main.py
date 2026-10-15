@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.pdf_processor import process_pdf
 from app.text_processor import chunk_text
-from app.vector_store import add_documents, list_documents
+from app.vector_store import add_documents, list_documents, list_document_records
 from app.rag import answer_question
 
 app = FastAPI(title="Healthcare Document RAG API")
@@ -54,7 +54,9 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     provider: Literal["openai", "groq", "gemini"] = "openai"
     api_key: str = Field(default="", max_length=512)
-    document_names: Optional[List[str]] = None
+    document_names: Optional[List[str]] = None  # legacy filename filter
+    document_ids: Optional[List[str]] = None
+    patient_label: Optional[str] = Field(default=None, max_length=128)
     session_id: str = Field(default="global", min_length=1, max_length=128)
 
 
@@ -73,7 +75,7 @@ def health_check():
 
 
 @app.post("/upload", dependencies=[Depends(require_app_token)])
-async def upload_document(file: UploadFile = File(...), session_id: str = Form("global")):
+async def upload_document(file: UploadFile = File(...), session_id: str = Form("global"), patient_label: str = Form("")):
     filename = _safe_component(file.filename or "", "filename")
     safe_session = _safe_component(session_id, "session_id")[:64]
     if not filename.lower().endswith(".pdf"):
@@ -82,9 +84,10 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
         raise HTTPException(status_code=413, detail="PDF exceeds the configured upload limit")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    final_path = os.path.join(UPLOAD_DIR, f"{safe_session}_{filename}")
-    # Unique temporary names avoid concurrent uploads corrupting each other.
-    temp_path = final_path + "." + uuid.uuid4().hex + ".uploading"
+    document_id = uuid.uuid4().hex
+    final_path = os.path.join(UPLOAD_DIR, f"{safe_session}_{document_id}_{filename}")
+    # Each upload has its own path, even when filenames repeat.
+    temp_path = final_path + ".uploading"
     total = 0
     try:
         with open(temp_path, "wb") as buffer:
@@ -106,12 +109,14 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
         if not chunks:
             raise HTTPException(status_code=422, detail="No readable text found in the PDF")
 
-        # Index first; the vector store preserves the previous document if embedding fails.
-        add_documents(chunks, safe_session)
+        # This label is metadata supplied by the uploader, not verified identity.
+        add_documents(chunks, safe_session, document_id=document_id, patient_label=patient_label)
         os.replace(temp_path, final_path)
         return {
             "message": "Upload processed",
+            "document_id": document_id,
             "filename": filename,
+            "patient_label": patient_label.strip() or "unspecified",
             "chunks": len(chunks),
             "pages_processed": len(pages),
         }
@@ -127,19 +132,20 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
 
 
 @app.get("/document-pdf", dependencies=[Depends(require_app_token)])
-def get_document_pdf(document_name: str, session_id: str = "global"):
-    """Serve an indexed PDF from the API's upload storage for the owning session."""
-    filename = _safe_component(document_name, "document name")
+def get_document_pdf(document_id: str, session_id: str = "global"):
+    """Serve a PDF by unique upload ID, never by a potentially duplicated filename."""
+    safe_id = _safe_component(document_id, "document_id")
     safe_session = _safe_component(session_id, "session_id")[:64]
-
-    # Require the name to be present in this session's index before serving a file.
-    if filename not in list_documents(safe_session):
+    record = next(
+        (item for item in list_document_records(safe_session) if item["document_id"] == safe_id),
+        None,
+    )
+    if record is None or safe_id.startswith("legacy:"):
         raise HTTPException(status_code=404, detail="Document not found")
-
-    pdf_path = os.path.join(UPLOAD_DIR, f"{safe_session}_{filename}")
+    filename = record["document_name"]
+    pdf_path = os.path.join(UPLOAD_DIR, f"{safe_session}_{safe_id}_{filename}")
     if not os.path.isfile(pdf_path):
         raise HTTPException(status_code=404, detail="PDF file is unavailable")
-
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
@@ -154,13 +160,48 @@ async def ask_question_endpoint(req: AskRequest):
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     session_id = _safe_component(req.session_id, "session_id")[:64]
-    document_names = None
-    if req.document_names is not None:
-        if len(req.document_names) > 100:
-            raise HTTPException(status_code=400, detail="Too many document filters")
-        document_names = [_safe_component(name, "document name") for name in req.document_names]
+    if req.document_names is not None and len(req.document_names) > 100:
+        raise HTTPException(status_code=400, detail="Too many document filters")
+    if req.document_ids is not None and len(req.document_ids) > 500:
+        raise HTTPException(status_code=400, detail="Too many document filters")
+
+    records = list_document_records(session_id)
+    if req.document_ids:
+        allowed_ids = {record["document_id"] for record in records}
+        if any(doc_id not in allowed_ids for doc_id in req.document_ids):
+            raise HTTPException(status_code=404, detail="One or more documents were not found in this session")
+    patient_label = (req.patient_label or "").strip()
+    available_labels = sorted({
+        record["patient_label"] for record in records
+        if record["patient_label"] and record["patient_label"] != "unspecified"
+    })
+    asks_about_self = bool(re.search(r"\b(my|mine|myself)\b", question, re.IGNORECASE))
+    if asks_about_self and not patient_label:
+        return {
+            "answer": "I cannot infer which patient you are from uploaded files. Please specify the patient record you mean. A label in a PDF or upload form is not identity verification.",
+            "clarification_required": True,
+            "available_patient_labels": available_labels,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+    if not patient_label and len(available_labels) > 1 and not req.document_ids and not req.document_names:
+        return {
+            "answer": "These documents are labelled for multiple patients. Which patient's records should I use? Select a patient label in the chat context. I will not combine patient records for a single-patient question.",
+            "clarification_required": True,
+            "available_patient_labels": available_labels,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
     try:
-        return answer_question(question, req.provider, req.api_key, document_names, session_id)
+        return answer_question(
+            question, req.provider, req.api_key,
+            req.document_names, session_id,
+            document_ids=req.document_ids, patient_label=patient_label or None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
@@ -170,4 +211,4 @@ async def ask_question_endpoint(req: AskRequest):
 @app.get("/documents", dependencies=[Depends(require_app_token)])
 def get_documents(session_id: str = "global"):
     safe_session = _safe_component(session_id, "session_id")
-    return {"documents": list_documents(safe_session)}
+    return {"documents": list_documents(safe_session), "records": list_document_records(safe_session)}
