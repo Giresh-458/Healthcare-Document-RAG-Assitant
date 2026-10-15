@@ -40,7 +40,7 @@ def answer_question(question: str, provider: str, api_key: str, document_names: 
         return {
             "answer": "This question does not appear to be related to the uploaded healthcare documents. Please ask a medical or report-related question.",
             "sources": [],
-            "metrics": {"latency_sec": latency, "context_precision": 0, "faithfulness": 0, "retrieved_chunks": 0},
+            "metrics": {"latency_sec": latency, "query_token_overlap_heuristic": 0, "answer_context_token_overlap_heuristic": 0, "retrieved_chunks": 0},
             "route": route
         }
         
@@ -51,10 +51,13 @@ def answer_question(question: str, provider: str, api_key: str, document_names: 
     relevant_chunks = HybridRetriever.search(question, top_k=k_value, document_names=document_names, session_id=session_id)
 
     if not relevant_chunks:
+        latency = round(time.time() - start_time, 2)
         return {
             "answer": "I could not find any uploaded documents or relevant context.",
             "sources": [],
-            "metrics": None
+            "metrics": {"latency_sec": latency, "query_token_overlap_heuristic": 0, "answer_context_token_overlap_heuristic": 0, "retrieved_chunks": 0},
+            "route": route,
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
         }
 
     # 2. Prepare the context
