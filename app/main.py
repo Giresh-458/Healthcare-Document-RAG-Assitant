@@ -189,7 +189,7 @@ async def ask_question_endpoint(req: AskRequest):
             "route": "CLARIFICATION",
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
         }
-    asks_multi_record = bool(re.search(r"\\b(all|every|across|each)\\b", question, re.IGNORECASE))
+    asks_multi_record = bool(re.search(r"\b(all|every|across|each)\b", question, re.IGNORECASE))
     selected_records = [record for record in records if req.document_ids and record["document_id"] in req.document_ids]
     selected_labels = {record["patient_label"] for record in selected_records if record["patient_label"] != "unspecified"}
     ambiguous_patient_scope = (
