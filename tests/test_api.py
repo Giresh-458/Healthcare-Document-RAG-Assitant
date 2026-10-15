@@ -177,3 +177,21 @@ def test_my_question_does_not_assume_uploader_is_patient(monkeypatch):
     response = client.post("/ask", json={"question": "What is my hemoglobin level?", "session_id": "test-session"})
     assert response.status_code == 200
     assert response.json()["clarification_required"] is True
+
+
+def test_all_hemoglobin_scan_checks_all_chunks_and_reports_sources():
+    from app.rag import _all_hemoglobin_candidates
+
+    chunks = [
+        {"text": "Hemoglobin: 12.4 g/dL", "metadata": {"document_id": "doc-1", "document_name": "report.pdf", "patient_label": "Patient A", "page": 1}},
+        {"text": "Hb 10.8 g/dL", "metadata": {"document_id": "doc-2", "document_name": "report.pdf", "patient_label": "Patient B", "page": 2}},
+        {"text": "Platelets 250", "metadata": {"document_id": "doc-3", "document_name": "other.pdf", "patient_label": "Patient C", "page": 1}},
+    ]
+    result = _all_hemoglobin_candidates("List all hemoglobin levels", chunks, 0.0)
+    assert result["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+    assert result["metrics"]["documents_scanned"] == 3
+    assert "12.4" in result["answer"]
+    assert "10.8" in result["answer"]
+    assert "Patient A" in result["answer"]
+    assert "Patient B" in result["answer"]
+    assert len(result["sources"]) == 2
