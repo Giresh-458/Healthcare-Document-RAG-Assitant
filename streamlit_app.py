@@ -394,14 +394,14 @@ with tab1:
 with tab2:
     st.markdown("### View Indexed Documents")
     try:
-        docs_res = requests.get(f"{API_URL}/documents", timeout=3)
+        docs_res = requests.get(f"{API_URL}/documents?session_id={st.session_state.session_id}", timeout=3)
         if docs_res.status_code == 200:
             doc_list = docs_res.json().get("documents", [])
             if doc_list:
                 selected_doc = st.selectbox("Select a document to view", doc_list)
                 
                 # Check locations where the PDF might be stored locally
-                pdf_path = os.path.join("data", "uploads", selected_doc)
+                pdf_path = os.path.join("data", "uploads", f"{st.session_state.session_id}_{selected_doc}")
                 if not os.path.exists(pdf_path):
                     pdf_path = os.path.join("sample_documents", selected_doc)
                     
