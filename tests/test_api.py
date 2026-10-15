@@ -23,3 +23,39 @@ def test_ask_empty_question():
     response = client.post("/ask", json={"question": "   "})
     assert response.status_code == 400
     assert "Question cannot be empty" in response.json()["detail"]
+
+
+def test_upload_rejects_fake_pdf_header(tmp_path, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    response = client.post(
+        "/upload",
+        files={"file": ("fake.pdf", b"not a PDF", "application/pdf")},
+        data={"session_id": "test-session"},
+    )
+    assert response.status_code == 400
+    assert "PDF header" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_api_token_gate_rejects_missing_token(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "test-secret")
+    response = client.get("/documents", params={"session_id": "test-session"})
+    assert response.status_code == 401
+
+
+def test_api_token_gate_accepts_correct_token(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "test-secret")
+    response = client.get(
+        "/documents",
+        params={"session_id": "test-session"},
+        headers={"X-App-Token": "test-secret"},
+    )
+    assert response.status_code == 200
+    assert "documents" in response.json()
