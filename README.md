@@ -130,8 +130,8 @@ Open your browser to `http://localhost:8501`.
 1. Select your LLM Provider (e.g., **Groq**) and paste your API key in the sidebar.
 2. Click **Load Demo Report (Hemoglobin Lab)** in the sidebar.
 3. Common test queries:
-   - *"What is the hemoglobin level?"* -> Routed as `FACTOID`, answers `14 g/dl`.
-   - *"Are there any abnormal values?"* -> Routed as `AGGREGATION`, verifies reference ranges (`13 - 17 g/dl`).
+   - *"What is the hemoglobin level?"* -> Answers only when the record scope is unambiguous; asks for clarification when multiple patient labels exist.
+   - *"List all hemoglobin levels across these records"* -> Scans all indexed chunks for candidate hemoglobin values and cites each matched source; regex extraction is heuristic and must be verified.
    - *"Write a poem about space."* -> Routed as `IRRELEVANT`, blocked by triage guardrail.
 
 ---
@@ -165,6 +165,17 @@ Healthcare-Document-RAG-Assitant/
 ├── requirements.txt          # Python dependencies
 └── README.md                 # Project documentation
 ```
+
+---
+
+## Patient and document scoping (prototype)
+
+- Every new upload receives a unique `document_id`, so two PDFs with the same filename no longer overwrite each other. The PDF viewer and document filters use that ID rather than the filename.
+- Uploaders may provide a `patient_label` (for example, a synthetic label such as `Patient A`). This is user-supplied metadata only; it is **not verified identity** and does not establish permission to view a record.
+- A question such as "What is my hemoglobin?" is not answered by guessing that the uploader is the patient. The API asks for a patient scope. When a single-patient question spans multiple labelled patients, it asks for clarification instead of silently combining them.
+- Explicit all-record hemoglobin questions scan all chunks in the current session/document/patient scope, rather than using top-k retrieval. The scan uses text patterns, may miss table/OCR layouts, and reports candidate matches—not validated clinical extraction. Check every source report. Other broad aggregation questions still use the normal bounded RAG retrieval path and must not be represented as exhaustive.
+- The app currently has session isolation and an optional shared API token, **not verified user identity or patient-level authorization**. Do not expose real patient data or treat patient labels as access control. Use synthetic data only. A production system needs real authentication, authorization policy, verified patient identity/linkage, audit logging, and tested privacy controls.
+- Existing indexed chunks created before unique IDs may appear as legacy records. Re-upload those PDFs to get unique IDs and a reliable viewer record. Files previously overwritten by same-name uploads cannot be recovered by this change.
 
 ---
 
