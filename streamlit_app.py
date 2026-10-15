@@ -5,7 +5,12 @@ import base64
 import uuid
 import html
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+APP_API_TOKEN = os.getenv("APP_API_TOKEN", "").strip()
+
+
+def _api_headers():
+    return {"X-App-Token": APP_API_TOKEN} if APP_API_TOKEN else {}
 
 # ──────────────────────── SESSION ISOLATION ────────────────────────
 if "session_id" not in st.session_state:
@@ -180,7 +185,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Document Management")
-    st.caption("Documents are filtered by session ID in this prototype. Session IDs are not authentication; do not use with sensitive real patient data.")
+    st.caption("Documents are filtered by session ID. IDs are not authentication. Use synthetic data; configure APP_API_TOKEN for a shared-token API gate.")
 
     # ONE-CLICK DEMO LOADER
     if st.button("Load Demo Report (Hemoglobin Lab)", use_container_width=True):
@@ -188,11 +193,11 @@ with st.sidebar:
         if os.path.exists(demo_path):
             with st.spinner("Indexing demo document..."):
                 with open(demo_path, "rb") as f:
-                    # We pass "global" session_id for the demo so everyone can see it
+                    # Index the demo into this browser session, not a shared global corpus
                     files = {"file": ("hemoglobin-report-format.pdf", f.read(), "application/pdf")}
                     data = {"session_id": st.session_state.session_id}
                     try:
-                        res = requests.post(f"{API_URL}/upload", files=files, data=data)
+                        res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
                         if res.status_code == 200:
                             st.success("Demo report loaded successfully.")
                         else:
@@ -215,7 +220,7 @@ with st.sidebar:
                     try:
                         res = requests.post(f"{API_URL}/upload", files=files, data=data)
                         if res.status_code == 200:
-                            st.success(f"{uploaded_file.name} uploaded securely to your private session.")
+                            st.success(f"{uploaded_file.name} uploaded to this demo session.")
                         else:
                             st.error(f"Upload error: {res.text}")
                     except:
@@ -225,7 +230,7 @@ with st.sidebar:
     st.markdown("### Chat Context")
     try:
         # Fetch documents specific to THIS user's session (plus globals)
-        docs = requests.get(f"{API_URL}/documents?session_id={st.session_state.session_id}", timeout=3).json().get("documents", [])
+        docs = requests.get(f"{API_URL}/documents", params={"session_id": st.session_state.session_id}, headers=_api_headers(), timeout=3).json().get("documents", [])
         if docs:
             st.caption("Search within specific documents:")
             selected_chat_docs = st.multiselect(
@@ -350,8 +355,6 @@ with tab1:
             with st.chat_message("assistant"):
                 if not docs:
                     st.error("⚠️ Please upload a document or load the demo report first.")
-                elif not docs_to_send:
-                    st.warning("⚠️ Please select at least one document from the 'Document Filter' dropdown in the sidebar to search.")
                 elif not api_key:
                     st.error("⚠️ Please provide an API key in the sidebar configuration to proceed.")
                 else:
@@ -364,7 +367,7 @@ with tab1:
                             "session_id": st.session_state.session_id
                         }
                         try:
-                            res = requests.post(f"{API_URL}/ask", json=payload, timeout=60)
+                            res = requests.post(f"{API_URL}/ask", json=payload, headers=_api_headers(), timeout=60)
                             if res.status_code == 200:
                                 data = res.json()
                                 answer = data.get("answer", "")
