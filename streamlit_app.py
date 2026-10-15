@@ -198,7 +198,7 @@ with st.sidebar:
                 with open(demo_path, "rb") as f:
                     # Index the demo into this browser session, not a shared global corpus
                     files = {"file": ("hemoglobin-report-format.pdf", f.read(), "application/pdf")}
-                    data = {"session_id": st.session_state.session_id}
+                    data = {"session_id": st.session_state.session_id, "patient_label": "Demo Patient"}
                     try:
                         res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
                         if res.status_code == 200:
@@ -210,6 +210,7 @@ with st.sidebar:
         else:
             st.error("Demo file not found in sample_documents/ directory.")
 
+    patient_label_input = st.text_input("Patient label for this upload (optional)", placeholder="e.g., Patient A; not identity verification")
     st.caption("Or upload custom clinical PDF:")
     uploaded_file = st.file_uploader("Upload PDF (Max 5MB)", type=["pdf"], label_visibility="collapsed")
     if uploaded_file:
@@ -219,7 +220,7 @@ with st.sidebar:
             if st.button("Upload Document", use_container_width=True):
                 with st.spinner("Processing document..."):
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-                    data = {"session_id": st.session_state.session_id}
+                    data = {"session_id": st.session_state.session_id, "patient_label": patient_label_input.strip()}
                     try:
                         res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
                         if res.status_code == 200:
@@ -231,30 +232,48 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Chat Context")
+    st.caption("Patient labels help scope a demo query; they are not verified identity or access control.")
     try:
-        # Fetch documents specific to THIS user's session (plus globals)
-        docs = requests.get(f"{API_URL}/documents", params={"session_id": st.session_state.session_id}, headers=_api_headers(), timeout=3).json().get("documents", [])
-        if docs:
-            st.caption("Search within specific documents:")
-            selected_chat_docs = st.multiselect(
-                "Document Filter", 
-                docs, 
-                default=[], 
-                placeholder="All Documents (Click to filter)", 
-                label_visibility="collapsed"
+        docs_response = requests.get(
+            f"{API_URL}/documents",
+            params={"session_id": st.session_state.session_id},
+            headers=_api_headers(),
+            timeout=3,
+        )
+        docs_payload = docs_response.json() if docs_response.status_code == 200 else {}
+        records = docs_payload.get("records", [])
+        docs = docs_payload.get("documents", [])
+        labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") != "unspecified"})
+        patient_scope_options = ["No patient selected"] + labels
+        selected_patient_scope = st.selectbox("Patient scope", patient_scope_options, index=0)
+        patient_label_to_send = None if selected_patient_scope == "No patient selected" else selected_patient_scope
+        if records:
+            st.caption("Search within specific upload records (duplicate filenames remain separate):")
+            record_labels = {
+                f"{r['document_name']} · {r.get('patient_label', 'unspecified')} · {r['document_id'][-8:]}": r["document_id"]
+                for r in records
+            }
+            selected_record_labels = st.multiselect(
+                "Document Filter", list(record_labels.keys()), default=[],
+                placeholder="All records in this session", label_visibility="collapsed"
             )
-            # If nothing is selected, we consider it "All Documents" (None in backend)
-            docs_to_send = selected_chat_docs if len(selected_chat_docs) > 0 else None
-            
-            st.markdown("**Currently Indexed:**")
-            for d in docs:
-                st.markdown(f'<div class="doc-item">{html.escape(str(d))}</div>', unsafe_allow_html=True)
+            docs_to_send = [record_labels[label] for label in selected_record_labels] or None
+            st.markdown("**Currently Indexed Uploads:**")
+            for record in records:
+                st.markdown(
+                    f'<div class="doc-item">{html.escape(str(record["document_name"]))} · '
+                    f'{html.escape(str(record.get("patient_label", "unspecified")))} · '
+                    f'{html.escape(str(record["document_id"][-8:]))}</div>',
+                    unsafe_allow_html=True,
+                )
         else:
             docs_to_send = None
+            patient_label_to_send = None
             st.caption("No documents indexed yet.")
-    except:
-        docs_to_send = None
-        st.caption("Backend offline.")
+    except (requests.RequestException, ValueError, KeyError):
+        docs, records, docs_to_send, patient_label_to_send = [], [], None, None
+        st.caption("Backend offline or document index unavailable.")
+
 
     st.markdown("---")
     st.markdown("### Sample Queries")
@@ -366,7 +385,8 @@ with tab1:
                             "question": prompt, 
                             "provider": provider, 
                             "api_key": api_key,
-                            "document_names": docs_to_send,
+                            "document_ids": docs_to_send,
+                            "patient_label": patient_label_to_send,
                             "session_id": st.session_state.session_id
                         }
                         try:
@@ -402,9 +422,11 @@ with tab2:
     try:
         docs_res = requests.get(f"{API_URL}/documents", params={"session_id": st.session_state.session_id}, headers=_api_headers(), timeout=3)
         if docs_res.status_code == 200:
-            doc_list = docs_res.json().get("documents", [])
-            if doc_list:
-                selected_doc = st.selectbox("Select a document to view", doc_list)
+            doc_records = docs_res.json().get("records", [])
+            if doc_records:
+                viewer_options = {f"{r['document_name']} · {r.get('patient_label', 'unspecified')} · {r['document_id'][-8:]}": r for r in doc_records}
+                selected_doc_label = st.selectbox("Select an upload to view", list(viewer_options.keys()))
+                selected_doc = viewer_options[selected_doc_label]
                 
                 # Fetch the PDF from the API that owns the upload. The Streamlit host
                 # may not share a filesystem with the FastAPI service.
@@ -412,7 +434,7 @@ with tab2:
                     pdf_res = requests.get(
                         f"{API_URL}/document-pdf",
                         params={
-                            "document_name": selected_doc,
+                            "document_id": selected_doc["document_id"],
                             "session_id": st.session_state.session_id,
                         },
                         headers=_api_headers(),
@@ -423,7 +445,7 @@ with tab2:
                         pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
                         st.markdown(pdf_display, unsafe_allow_html=True)
                     elif pdf_res.status_code == 404:
-                        st.warning("The PDF file is not available in the backend storage for this session. Re-upload the document and try again.")
+                        st.warning("The PDF file is not available in backend storage for this upload. Re-upload the document and try again.")
                     else:
                         st.error(f"Could not load PDF preview (HTTP {pdf_res.status_code}).")
                 except requests.RequestException:
