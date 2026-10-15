@@ -406,18 +406,28 @@ with tab2:
             if doc_list:
                 selected_doc = st.selectbox("Select a document to view", doc_list)
                 
-                # Check locations where the PDF might be stored locally
-                pdf_path = os.path.join("data", "uploads", f"{st.session_state.session_id}_{selected_doc}")
-                if not os.path.exists(pdf_path):
-                    pdf_path = os.path.join("sample_documents", selected_doc)
-                    
-                if os.path.exists(pdf_path):
-                    with open(pdf_path, "rb") as f:
-                        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-                    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
-                else:
-                    st.warning(f"Local file not found for rendering: {selected_doc}")
+                # Fetch the PDF from the API that owns the upload. The Streamlit host
+                # may not share a filesystem with the FastAPI service.
+                try:
+                    pdf_res = requests.get(
+                        f"{API_URL}/document-pdf",
+                        params={
+                            "document_name": selected_doc,
+                            "session_id": st.session_state.session_id,
+                        },
+                        headers=_api_headers(),
+                        timeout=15,
+                    )
+                    if pdf_res.status_code == 200 and pdf_res.headers.get("content-type", "").lower().startswith("application/pdf"):
+                        base64_pdf = base64.b64encode(pdf_res.content).decode("ascii")
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    elif pdf_res.status_code == 404:
+                        st.warning("The PDF file is not available in the backend storage for this session. Re-upload the document and try again.")
+                    else:
+                        st.error(f"Could not load PDF preview (HTTP {pdf_res.status_code}).")
+                except requests.RequestException:
+                    st.error("Could not connect to the PDF service. Please retry in a moment.")
             else:
                 st.info("No documents uploaded yet. Please upload a document or load the demo from the sidebar.")
         else:
