@@ -72,48 +72,108 @@ def test_upload_requires_token_when_configured(monkeypatch):
     assert response.status_code == 401
 
 
-def test_document_pdf_serves_indexed_session_file(tmp_path, monkeypatch):
+
+def test_document_pdf_serves_unique_upload_by_id(tmp_path, monkeypatch):
     import app.main as main_module
 
     monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
     monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
-    monkeypatch.setattr(main_module, "list_documents", lambda session_id: ["report.pdf"] if session_id == "session-a" else [])
-    (tmp_path / "session-a_report.pdf").write_bytes(b"%PDF-1.4 test")
-
+    document_id = "abc123"
+    monkeypatch.setattr(
+        main_module,
+        "list_document_records",
+        lambda session_id: [{"document_id": document_id, "document_name": "report.pdf"}]
+        if session_id == "session-a" else [],
+    )
+    (tmp_path / f"session-a_{document_id}_report.pdf").write_bytes(b"%PDF-1.4 test")
     response = client.get(
         "/document-pdf",
-        params={"document_name": "report.pdf", "session_id": "session-a"},
+        params={"document_id": document_id, "session_id": "session-a"},
     )
-
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert response.content == b"%PDF-1.4 test"
 
 
-def test_document_pdf_does_not_serve_other_sessions_file(tmp_path, monkeypatch):
+def test_document_pdf_does_not_serve_another_session(tmp_path, monkeypatch):
     import app.main as main_module
 
     monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
     monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
-    monkeypatch.setattr(main_module, "list_documents", lambda session_id: ["report.pdf"] if session_id == "session-a" else [])
-    (tmp_path / "session-a_report.pdf").write_bytes(b"%PDF-1.4 test")
-
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [])
     response = client.get(
         "/document-pdf",
-        params={"document_name": "report.pdf", "session_id": "session-b"},
+        params={"document_id": "abc123", "session_id": "session-b"},
     )
-
     assert response.status_code == 404
 
 
-def test_document_pdf_requires_shared_token_when_configured(tmp_path, monkeypatch):
+def test_document_pdf_requires_shared_token_when_configured(monkeypatch):
     import app.main as main_module
 
     monkeypatch.setattr(main_module, "APP_API_TOKEN", "test-secret")
-    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
     response = client.get(
         "/document-pdf",
-        params={"document_name": "report.pdf", "session_id": "session-a"},
+        params={"document_id": "abc123", "session_id": "session-a"},
+    )
+    assert response.status_code == 401
+
+
+def test_same_filename_uploads_get_distinct_document_ids(tmp_path, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(main_module, "process_pdf", lambda path, filename, max_pages: [{"text": "Hemoglobin 12.4 g/dL", "page": 1, "document_name": filename}])
+    monkeypatch.setattr(main_module, "chunk_text", lambda pages: [{"text": pages[0]["text"], "metadata": {"document_name": pages[0]["document_name"], "page": 1, "medical_entities": "hemoglobin"}}])
+    indexed = []
+    monkeypatch.setattr(main_module, "add_documents", lambda chunks, session_id, document_id, patient_label: indexed.append((document_id, patient_label)))
+
+    first = client.post(
+        "/upload",
+        files={"file": ("same.pdf", b"%PDF-1.4 first", "application/pdf")},
+        data={"session_id": "test-session", "patient_label": "Patient A"},
+    )
+    second = client.post(
+        "/upload",
+        files={"file": ("same.pdf", b"%PDF-1.4 second", "application/pdf")},
+        data={"session_id": "test-session", "patient_label": "Patient B"},
     )
 
-    assert response.status_code == 401
+    assert first.status_code == second.status_code == 200
+    first_data, second_data = first.json(), second.json()
+    assert first_data["document_id"] != second_data["document_id"]
+    assert first_data["filename"] == second_data["filename"] == "same.pdf"
+    assert len(indexed) == 2
+    assert indexed[0][1] == "Patient A"
+    assert indexed[1][1] == "Patient B"
+    assert (tmp_path / f"test-session_{first_data['document_id']}_same.pdf").exists()
+    assert (tmp_path / f"test-session_{second_data['document_id']}_same.pdf").exists()
+
+
+def test_ambiguous_multi_patient_question_requests_clarification(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "same.pdf", "patient_label": "Patient A"},
+        {"document_id": "doc-b", "document_name": "same.pdf", "patient_label": "Patient B"},
+    ])
+    monkeypatch.setattr(main_module, "answer_question", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not answer ambiguous question")))
+    response = client.post("/ask", json={"question": "What is the hemoglobin level?", "session_id": "test-session"})
+    assert response.status_code == 200
+    assert response.json()["clarification_required"] is True
+    assert response.json()["route"] == "CLARIFICATION"
+    assert set(response.json()["available_patient_labels"]) == {"Patient A", "Patient B"}
+
+
+def test_my_question_does_not_assume_uploader_is_patient(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "report.pdf", "patient_label": "Patient A"},
+    ])
+    response = client.post("/ask", json={"question": "What is my hemoglobin level?", "session_id": "test-session"})
+    assert response.status_code == 200
+    assert response.json()["clarification_required"] is True
