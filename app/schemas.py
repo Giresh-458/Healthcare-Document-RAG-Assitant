@@ -2,10 +2,10 @@ from pydantic import BaseModel, Field
 from typing import List, Literal
 
 class MedicalAnswer(BaseModel):
-    """
-    Pydantic schema that forces the LLM to output a strictly structured JSON response.
-    This guarantees that the frontend receives predictable data types, which is 
-    critical for production enterprise systems.
+    """Structured response contract requested from the model.
+
+    Pydantic validates the returned shape, not the truth or clinical safety of
+    the model's claims. Confidence is self-reported and is not calibrated.
     """
     answer: str = Field(description="The detailed text answer to the user's question, based strictly on the context.")
     confidence: Literal["high", "medium", "low"] = Field(description="Confidence level in the answer based on the clarity and presence of information in the context.")

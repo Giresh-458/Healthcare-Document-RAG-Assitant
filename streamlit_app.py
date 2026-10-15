@@ -4,8 +4,16 @@ import os
 import base64
 import uuid
 import html
+from dotenv import load_dotenv
 
-API_URL = "http://127.0.0.1:8000"
+load_dotenv()
+
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+APP_API_TOKEN = os.getenv("APP_API_TOKEN", "").strip()
+
+
+def _api_headers():
+    return {"X-App-Token": APP_API_TOKEN} if APP_API_TOKEN else {}
 
 # ──────────────────────── SESSION ISOLATION ────────────────────────
 if "session_id" not in st.session_state:
@@ -180,7 +188,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Document Management")
-    st.caption("Each visitor has an isolated private session. Uploaded files cannot be seen by other users.")
+    st.caption("Documents are filtered by session ID. IDs are not authentication. Use synthetic data; configure APP_API_TOKEN for a shared-token API gate.")
 
     # ONE-CLICK DEMO LOADER
     if st.button("Load Demo Report (Hemoglobin Lab)", use_container_width=True):
@@ -188,11 +196,11 @@ with st.sidebar:
         if os.path.exists(demo_path):
             with st.spinner("Indexing demo document..."):
                 with open(demo_path, "rb") as f:
-                    # We pass "global" session_id for the demo so everyone can see it
+                    # Index the demo into this browser session, not a shared global corpus
                     files = {"file": ("hemoglobin-report-format.pdf", f.read(), "application/pdf")}
-                    data = {"session_id": "global"}
+                    data = {"session_id": st.session_state.session_id}
                     try:
-                        res = requests.post(f"{API_URL}/upload", files=files, data=data)
+                        res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
                         if res.status_code == 200:
                             st.success("Demo report loaded successfully.")
                         else:
@@ -213,9 +221,9 @@ with st.sidebar:
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
                     data = {"session_id": st.session_state.session_id}
                     try:
-                        res = requests.post(f"{API_URL}/upload", files=files, data=data)
+                        res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
                         if res.status_code == 200:
-                            st.success(f"{uploaded_file.name} uploaded securely to your private session.")
+                            st.success(f"{uploaded_file.name} uploaded to this demo session.")
                         else:
                             st.error(f"Upload error: {res.text}")
                     except:
@@ -225,7 +233,7 @@ with st.sidebar:
     st.markdown("### Chat Context")
     try:
         # Fetch documents specific to THIS user's session (plus globals)
-        docs = requests.get(f"{API_URL}/documents?session_id={st.session_state.session_id}", timeout=3).json().get("documents", [])
+        docs = requests.get(f"{API_URL}/documents", params={"session_id": st.session_state.session_id}, headers=_api_headers(), timeout=3).json().get("documents", [])
         if docs:
             st.caption("Search within specific documents:")
             selected_chat_docs = st.multiselect(
@@ -290,10 +298,10 @@ def render_assistant_extras(structured_data, route, metrics, sources):
                 unsafe_allow_html=True
             )
         with cols[2]:
-            fp = (metrics or {}).get("faithfulness", "—")
+            fp = (metrics or {}).get("answer_context_token_overlap_heuristic", "—")
             st.markdown(
-                f'<div class="metric-card"><div class="label">Faithfulness</div>'
-                f'<div class="value high">{fp}</div></div>',
+                f'<div class="metric-card"><div class="label">Answer/context token overlap (heuristic)</div>'
+                f'<div class="value blue">{fp}</div></div>',
                 unsafe_allow_html=True
             )
         with cols[3]:
@@ -350,8 +358,6 @@ with tab1:
             with st.chat_message("assistant"):
                 if not docs:
                     st.error("⚠️ Please upload a document or load the demo report first.")
-                elif not docs_to_send:
-                    st.warning("⚠️ Please select at least one document from the 'Document Filter' dropdown in the sidebar to search.")
                 elif not api_key:
                     st.error("⚠️ Please provide an API key in the sidebar configuration to proceed.")
                 else:
@@ -364,7 +370,7 @@ with tab1:
                             "session_id": st.session_state.session_id
                         }
                         try:
-                            res = requests.post(f"{API_URL}/ask", json=payload, timeout=60)
+                            res = requests.post(f"{API_URL}/ask", json=payload, headers=_api_headers(), timeout=60)
                             if res.status_code == 200:
                                 data = res.json()
                                 answer = data.get("answer", "")
@@ -394,14 +400,14 @@ with tab1:
 with tab2:
     st.markdown("### View Indexed Documents")
     try:
-        docs_res = requests.get(f"{API_URL}/documents", timeout=3)
+        docs_res = requests.get(f"{API_URL}/documents", params={"session_id": st.session_state.session_id}, headers=_api_headers(), timeout=3)
         if docs_res.status_code == 200:
             doc_list = docs_res.json().get("documents", [])
             if doc_list:
                 selected_doc = st.selectbox("Select a document to view", doc_list)
                 
                 # Check locations where the PDF might be stored locally
-                pdf_path = os.path.join("data", "uploads", selected_doc)
+                pdf_path = os.path.join("data", "uploads", f"{st.session_state.session_id}_{selected_doc}")
                 if not os.path.exists(pdf_path):
                     pdf_path = os.path.join("sample_documents", selected_doc)
                     

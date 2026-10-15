@@ -1,6 +1,6 @@
 # Healthcare Document Intelligence Platform (Adaptive RAG)
 
-A production-oriented, privacy-preserving Retrieval-Augmented Generation (RAG) system engineered for clinical documents and laboratory reports. Built with **FastAPI**, **Streamlit**, **ChromaDB**, **BM25**, and **LangChain**, featuring hybrid retrieval, adaptive query routing, clinical entity extraction, automated PHI redaction, and quantitative evaluation metrics.
+An educational Retrieval-Augmented Generation (RAG) prototype for synthetic clinical documents and laboratory reports. It is not clinically validated, does not guarantee de-identification, and is not production-ready. Built with **FastAPI**, **Streamlit**, **ChromaDB**, **BM25**, and **LangChain**, featuring hybrid retrieval, adaptive query routing, clinical entity extraction, automated PHI redaction, and lightweight diagnostic metrics.
 
 ---
 
@@ -13,13 +13,13 @@ Clinical PDF
 [PyMuPDF / OCR Fallback]
     │
     ▼
-[PHI / PII Redaction Layer] ────► Mask Patient Demographics (HIPAA Alignment)
+[PHI / PII Redaction Layer] ────► Best-effort pattern redaction (not comprehensive de-identification)
     │
     ▼
 [Medical Named Entity Recognition] ──► Extract Clinical Terms & Lab Markers
     │
     ▼
-[Healthcare-Aware Chunking] ────► Retain Table Cohesion & Metadata
+[Text Chunking] ────► Attach page and document metadata
     │
     ├──► Dense Embeddings (HuggingFace all-MiniLM-L6-v2) ──► ChromaDB
     └──► Sparse Lexical Index ──────────────────────────────► BM25
@@ -44,15 +44,15 @@ User Query                                                       │
 [LLM Generation + Structured Output] (Groq / OpenAI / Gemini)
     │
     ├── Schema-Validated Output (Pydantic `MedicalAnswer`)
-    │   ├── Verified Response Content
+    │   ├── Context-grounded answer attempt
     │   ├── Confidence Level (HIGH / MEDIUM / LOW)
     │   ├── Extracted Clinical Entities
     │   └── Doctor Review Advisory Flag
     │
     ▼
 [Evaluation & Observability Engine]
-    ├── Faithfulness Score (Factual Claim Grounding)
-    ├── Context Precision Metric
+    ├── Query-token overlap heuristic
+    ├── Answer/context token overlap heuristic
     └── End-to-End Latency Logging (JSONL)
 ```
 
@@ -62,12 +62,12 @@ User Query                                                       │
 
 | Capability | Engineering Implementation | Design Rationale |
 | :--- | :--- | :--- |
-| **Hybrid Search + RRF** | Combines **BM25 Okapi** with **ChromaDB** dense embeddings via **Reciprocal Rank Fusion (RRF)**. | Dense models struggle with exact numeric metrics (e.g. `14 g/dl` vs `11 g/dl`). BM25 guarantees precision for numerical lab thresholds. |
-| **Adaptive Query Routing** | Triage classification classifies incoming questions into `FACTOID`, `AGGREGATION`, or `IRRELEVANT`. | Aggregation questions (e.g., *"Are there any abnormal values?"*) require high recall, while factoids require high precision. Irrelevant queries are blocked prior to retrieval. |
-| **PHI / PII Redaction** | Regex redaction cleans SSNs, phone numbers, and email patterns prior to vector storage. | Mitigates data leakage risks in compliance with HIPAA privacy standards. |
+| **Hybrid Search + RRF** | Combines **BM25 Okapi** with **ChromaDB** dense embeddings via **Reciprocal Rank Fusion (RRF)**. | Lexical matching can help retrieve exact values and units alongside semantic matches; quality must be measured on a labelled set. |
+| **Adaptive Query Routing** | An LLM classifies incoming questions into `FACTOID`, `AGGREGATION`, or `IRRELEVANT` (an extra model call with added latency/cost). | The route changes retrieval depth or skips retrieval. This behavior has not yet been validated against a labelled routing dataset. |
+| **PHI / PII Redaction** | Regex redaction cleans SSNs, phone numbers, and email patterns prior to vector storage. | Masks a limited set of patterns. This is not HIPAA compliance and can miss identifiers; use synthetic data unless a separately validated privacy process exists. |
 | **Clinical NER** | Automatically identifies medical markers (`hemoglobin`, `rbc`, `glucose`, `hba1c`, etc.) and attaches them to chunk metadata. | Enhances metadata filtering and search index granularity. |
-| **Structured Output** | Powered by Pydantic schemas (`MedicalAnswer`). | Guarantees deterministic JSON contracts for production frontends, complete with self-assessed confidence and clinical review flags. |
-| **Live RAG Metrics** | Deterministic evaluation of **Context Precision**, **Faithfulness**, and **Pipeline Latency** logged per interaction. | Provides quantitative visibility into answer grounding and latency trends. |
+| **Structured Output** | Powered by Pydantic schemas (`MedicalAnswer`). | Requests schema-validated structured responses; model-generated confidence is not calibrated and this is not production-ready. |
+| **Live RAG Metrics** | Heuristic token-overlap indicators and latency logging. The overlap values are not validated context-precision or faithfulness metrics. | Provides basic diagnostics only. Do not use token overlap as evidence of factual correctness or clinical safety. |
 | **Integrated Demo Workflow** | One-click ingestion directly parses and embeds sample laboratory reports. | Enables frictionless evaluation and verification during technical reviews. |
 
 ---
@@ -87,8 +87,8 @@ User Query                                                       │
 
 ### 1. Clone & Set Up Environment
 ```bash
-git clone https://github.com/your-username/Healthcare-Document-RAG-Assistant.git
-cd Healthcare-Document-RAG-Assistant
+git clone https://github.com/Giresh-458/Healthcare-Document-RAG-Assitant.git
+cd Healthcare-Document-RAG-Assitant
 
 # Create and activate virtual environment
 python -m venv venv
@@ -100,13 +100,21 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure Environment Variables
-Create a `.env` file in the root directory (optional defaults are already configured in `app/config.py`):
+Copy `.env.example` to `.env` and edit values as needed. Keep secrets out of Git:
 ```env
 OPENAI_API_KEY=your_key_here
 CHUNK_SIZE=800
 CHUNK_OVERLAP=100
 TOP_K=4
+MAX_UPLOAD_BYTES=5242880
+MAX_PDF_PAGES=15
+APP_API_TOKEN=replace-with-a-long-random-token-for-shared-token-gating
+CORS_ALLOWED_ORIGINS=http://localhost:8501,http://127.0.0.1:8501
 ```
+
+### Testing
+
+Run the fast unit/API regression suite with `pip install -r requirements-test.txt` followed by `pytest -q`. Install `requirements.txt` for the full app, including local embedding and LLM-provider integrations. GitHub Actions runs compilation and the test suite on pull requests.
 
 ### 3. Launch Application
 A single command boots up both the **FastAPI backend (port 8000)** and the **Streamlit dashboard (port 8501)**:
@@ -131,7 +139,7 @@ Open your browser to `http://localhost:8501`.
 ## Repository Structure
 
 ```
-Healthcare-Document-RAG-Assistant/
+Healthcare-Document-RAG-Assitant/
 ├── app/
 │   ├── __init__.py
 │   ├── config.py             # Environment configuration & TF guardrails
@@ -140,7 +148,7 @@ Healthcare-Document-RAG-Assistant/
 │   ├── rag.py                # Core RAG pipeline orchestrator
 │   ├── hybrid_retriever.py   # BM25 + Dense RRF fusion retriever
 │   ├── query_router.py       # Triage classifier (Factoid/Aggregation/Irrelevant)
-│   ├── phi_redactor.py       # HIPAA-aligned PHI/PII redaction
+│   ├── phi_redactor.py       # Best-effort PHI/PII pattern redaction
 │   ├── medical_ner.py        # Clinical entity extraction
 │   ├── text_processor.py     # Clean chunking with metadata tagging
 │   ├── vector_store.py       # ChromaDB persistence & singleton embeddings
@@ -160,5 +168,20 @@ Healthcare-Document-RAG-Assistant/
 
 ---
 
+## API token gate
+
+If `APP_API_TOKEN` is set, configure the same value in the API and Streamlit process environments. The UI sends it in the `X-App-Token` header. The health endpoint remains public for basic process checks. This is a shared-token demo gate, not user-level authentication. If the token is unset, the API endpoints are unauthenticated and should remain on a trusted local network.
+
 ## Disclaimer
 *This system is intended for document intelligence and educational research purposes. It is not a certified medical device and does not replace professional clinical diagnosis or judgment.*
+
+
+## Known limitations and security notes
+
+- This repository is an educational prototype, not a clinical product or medical device.
+- PHI redaction uses regular expressions and is incomplete. It does not guarantee anonymization or HIPAA compliance. Use synthetic data for demos and tests.
+- Session IDs are isolation labels, not authentication. `APP_API_TOKEN` optionally gates API endpoints with one shared token; it is not per-user identity or authorization. Do not expose this API to untrusted users without proper authentication/authorization, rate limiting, TLS, secrets management, and deployment-specific security controls.
+- Dense candidate retrieval is bounded and BM25 is cached in-process by corpus fingerprint. The selected session's chunks are still loaded for lexical search on each request; large corpora need paginated/persistent lexical indexing and benchmarking.
+- The displayed token-overlap values are heuristics only. Build a labelled dataset and measure retrieval recall/precision, answer correctness, citation support, abstention behavior, and latency before making quality claims.
+- Upload size and page limits are enforced by the API. Configure \`MAX_UPLOAD_BYTES\`, \`MAX_PDF_PAGES\`, and \`CORS_ALLOWED_ORIGINS\` for your deployment.
+- The project has not been validated for medical use. Use synthetic documents only. Never treat generated answers, confidence labels, or overlap heuristics as clinical decisions; qualified professionals must independently verify any medical interpretation.
