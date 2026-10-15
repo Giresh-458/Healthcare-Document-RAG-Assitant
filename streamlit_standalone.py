@@ -74,6 +74,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Document Management")
+    st.caption("Local standalone mode: session IDs are isolation labels, not authentication. Use synthetic documents only.")
 
     if st.button("Load Demo Report (Hemoglobin Lab)", use_container_width=True):
         demo_path = os.path.join("sample_documents", "hemoglobin-report-format.pdf")
@@ -81,7 +82,7 @@ with st.sidebar:
             with st.spinner("Indexing demo document..."):
                 pages = process_pdf(demo_path, "hemoglobin-report-format.pdf")
                 chunks = chunk_text(pages)
-                add_documents(chunks, "global")
+                add_documents(chunks, st.session_state.session_id)
                 st.success("Demo report loaded successfully.")
 
     uploaded_file = st.file_uploader("Upload PDF (Max 5MB)", type=["pdf"], label_visibility="collapsed")
@@ -128,7 +129,7 @@ with st.sidebar:
 
 # ──────────────────────── HELPER ────────────────────────
 def render_assistant_extras(structured_data, route, metrics, sources):
-    st.markdown(f"**Confidence:** `{structured_data.get('confidence_score', 'N/A')}`")
+    st.markdown(f"**Confidence:** `{structured_data.get('confidence', 'N/A')}`")
     entities = (structured_data or {}).get("medical_entities", [])
     if entities:
         tags_html = " ".join([f'<span class="entity-tag">{html.escape(str(e))}</span>' for e in entities])
@@ -164,8 +165,6 @@ with tab1:
             with st.chat_message("assistant"):
                 if not docs:
                     st.error("⚠️ Please upload a document or load the demo report first.")
-                elif not docs_to_send:
-                    st.warning("⚠️ Please select at least one document from the 'Document Filter' dropdown in the sidebar to search.")
                 elif not api_key:
                     st.error("⚠️ Please provide an API key in the sidebar configuration to proceed.")
                 else:
