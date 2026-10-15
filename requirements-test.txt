@@ -1,0 +1,13 @@
+fastapi
+pymupdf
+pytesseract
+Pillow
+chromadb
+python-dotenv
+pytest
+python-multipart
+httpx
+pydantic
+langchain-core
+langchain-text-splitters
+rank-bm25
