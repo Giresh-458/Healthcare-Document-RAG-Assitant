@@ -46,9 +46,9 @@ def _all_hemoglobin_candidates(question: str, chunks: List[Dict], start_time: fl
     rows, seen = [], set()
     for chunk in chunks:
         metadata = chunk["metadata"]
-        for pattern in value_patterns:
+        for pattern_index, pattern in enumerate(value_patterns):
             for match in pattern.finditer(chunk["text"]):
-                if match.re is value_patterns[0]:
+                if pattern_index == 0:
                     value = match.group(1)
                     unit = (match.group(2) or "unit not stated").replace(" ", "")
                 else:
