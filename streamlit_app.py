@@ -221,7 +221,7 @@ with st.sidebar:
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
                     data = {"session_id": st.session_state.session_id}
                     try:
-                        res = requests.post(f"{API_URL}/upload", files=files, data=data)
+                        res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
                         if res.status_code == 200:
                             st.success(f"{uploaded_file.name} uploaded to this demo session.")
                         else:
