@@ -1,6 +1,6 @@
 # Healthcare Document Intelligence Platform (Adaptive RAG)
 
-An educational Retrieval-Augmented Generation (RAG) prototype for synthetic clinical documents and laboratory reports. It is not clinically validated, does not guarantee de-identification, and is not production-ready. Built with **FastAPI**, **Streamlit**, **ChromaDB**, **BM25**, and **LangChain**, featuring hybrid retrieval, adaptive query routing, clinical entity extraction, automated PHI redaction, and quantitative evaluation metrics.
+An educational Retrieval-Augmented Generation (RAG) prototype for synthetic clinical documents and laboratory reports. It is not clinically validated, does not guarantee de-identification, and is not production-ready. Built with **FastAPI**, **Streamlit**, **ChromaDB**, **BM25**, and **LangChain**, featuring hybrid retrieval, adaptive query routing, clinical entity extraction, automated PHI redaction, and lightweight diagnostic metrics.
 
 ---
 
@@ -19,7 +19,7 @@ Clinical PDF
 [Medical Named Entity Recognition] ──► Extract Clinical Terms & Lab Markers
     │
     ▼
-[Healthcare-Aware Chunking] ────► Retain Table Cohesion & Metadata
+[Text Chunking] ────► Attach page and document metadata
     │
     ├──► Dense Embeddings (HuggingFace all-MiniLM-L6-v2) ──► ChromaDB
     └──► Sparse Lexical Index ──────────────────────────────► BM25
@@ -44,7 +44,7 @@ User Query                                                       │
 [LLM Generation + Structured Output] (Groq / OpenAI / Gemini)
     │
     ├── Schema-Validated Output (Pydantic `MedicalAnswer`)
-    │   ├── Verified Response Content
+    │   ├── Context-grounded answer attempt
     │   ├── Confidence Level (HIGH / MEDIUM / LOW)
     │   ├── Extracted Clinical Entities
     │   └── Doctor Review Advisory Flag
@@ -62,8 +62,8 @@ User Query                                                       │
 
 | Capability | Engineering Implementation | Design Rationale |
 | :--- | :--- | :--- |
-| **Hybrid Search + RRF** | Combines **BM25 Okapi** with **ChromaDB** dense embeddings via **Reciprocal Rank Fusion (RRF)**. | Dense models struggle with exact numeric metrics (e.g. `14 g/dl` vs `11 g/dl`). BM25 guarantees precision for numerical lab thresholds. |
-| **Adaptive Query Routing** | Triage classification classifies incoming questions into `FACTOID`, `AGGREGATION`, or `IRRELEVANT`. | Aggregation questions (e.g., *"Are there any abnormal values?"*) require high recall, while factoids require high precision. Irrelevant queries are blocked prior to retrieval. |
+| **Hybrid Search + RRF** | Combines **BM25 Okapi** with **ChromaDB** dense embeddings via **Reciprocal Rank Fusion (RRF)**. | Lexical matching can help retrieve exact values and units alongside semantic matches; quality must be measured on a labelled set. |
+| **Adaptive Query Routing** | An LLM classifies incoming questions into `FACTOID`, `AGGREGATION`, or `IRRELEVANT` (an extra model call with added latency/cost). | The route changes retrieval depth or skips retrieval. This behavior has not yet been validated against a labelled routing dataset. |
 | **PHI / PII Redaction** | Regex redaction cleans SSNs, phone numbers, and email patterns prior to vector storage. | Masks a limited set of patterns. This is not HIPAA compliance and can miss identifiers; use synthetic data unless a separately validated privacy process exists. |
 | **Clinical NER** | Automatically identifies medical markers (`hemoglobin`, `rbc`, `glucose`, `hba1c`, etc.) and attaches them to chunk metadata. | Enhances metadata filtering and search index granularity. |
 | **Structured Output** | Powered by Pydantic schemas (`MedicalAnswer`). | Requests schema-validated structured responses; model-generated confidence is not calibrated and this is not production-ready. |
