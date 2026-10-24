@@ -211,21 +211,18 @@ with st.sidebar:
             st.error("Demo file not found in sample_documents/ directory.")
 
     patient_label_input = st.text_input("Patient label for this upload (optional)", placeholder="e.g., Patient A; not identity verification")
-    st.caption("Upload one or more synthetic clinical PDFs (maximum 5 files, 5MB each).")
+    st.caption("Upload multiple synthetic clinical PDFs (5MB maximum per file).")
     uploaded_files = st.file_uploader(
         "Upload PDF files",
         type=["pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed",
-        help="Select multiple PDFs at once. Each file must be 5MB or smaller; up to 5 files per batch."
+        help="Select as many PDFs as you need. Each file must be 5MB or smaller."
     )
     max_file_bytes = 5 * 1024 * 1024
-    max_batch_files = 5
     if uploaded_files:
         oversized = [file.name for file in uploaded_files if file.size > max_file_bytes]
-        if len(uploaded_files) > max_batch_files:
-            st.error(f"Please select no more than {max_batch_files} PDFs per batch.")
-        elif oversized:
+        if oversized:
             st.error("These files exceed the 5MB per-file limit: " + ", ".join(oversized))
         else:
             st.caption(f"{len(uploaded_files)} PDF(s) selected · {sum(file.size for file in uploaded_files) / (1024 * 1024):.1f} MB total")

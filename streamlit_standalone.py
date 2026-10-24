@@ -90,15 +90,12 @@ with st.sidebar:
         type=["pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed",
-        help="Select up to 5 PDFs. Each file must be 5MB or smaller."
+        help="Select as many PDFs as you need. Each file must be 5MB or smaller."
     )
     max_file_bytes = 5 * 1024 * 1024
-    max_batch_files = 5
     if uploaded_files:
         oversized = [file.name for file in uploaded_files if file.size > max_file_bytes]
-        if len(uploaded_files) > max_batch_files:
-            st.error(f"Please select no more than {max_batch_files} PDFs per batch.")
-        elif oversized:
+        if oversized:
             st.error("These files exceed the 5MB per-file limit: " + ", ".join(oversized))
         else:
             total_mb = sum(file.size for file in uploaded_files) / (1024 * 1024)
