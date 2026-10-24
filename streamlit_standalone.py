@@ -31,7 +31,10 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    #MainMenu, footer, header { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
+    /* Keep Streamlit's header available so the sidebar expand/collapse control remains usable. */
+    header[data-testid="stHeader"] { visibility: visible !important; background: transparent !important; }
+    button[data-testid="collapsedControl"] { visibility: visible !important; display: flex !important; }
     section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%); }
     section[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
     .hero-banner { background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 50%, #8b5cf6 100%); padding: 1.5rem 2rem; border-radius: 16px; margin-bottom: 1.5rem; color: white; }
