@@ -85,32 +85,65 @@ with st.sidebar:
                 add_documents(chunks, st.session_state.session_id)
                 st.success("Demo report loaded successfully.")
 
-    uploaded_file = st.file_uploader("Upload PDF (Max 5MB)", type=["pdf"], label_visibility="collapsed")
-    if uploaded_file:
-        # Enforce a 5MB file size limit for free-tier RAM safety
-        if uploaded_file.size > 5 * 1024 * 1024:
-            st.error("⚠️ File is too large! Please upload a clinical report smaller than 5MB to prevent free-tier memory crashes.")
+    uploaded_files = st.file_uploader(
+        "Upload PDF files",
+        type=["pdf"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        help="Select up to 5 PDFs. Each file must be 5MB or smaller."
+    )
+    max_file_bytes = 5 * 1024 * 1024
+    max_batch_files = 5
+    if uploaded_files:
+        oversized = [file.name for file in uploaded_files if file.size > max_file_bytes]
+        if len(uploaded_files) > max_batch_files:
+            st.error(f"Please select no more than {max_batch_files} PDFs per batch.")
+        elif oversized:
+            st.error("These files exceed the 5MB per-file limit: " + ", ".join(oversized))
         else:
-            if st.button("Upload Document", use_container_width=True):
-                with st.spinner("Processing document..."):
+            total_mb = sum(file.size for file in uploaded_files) / (1024 * 1024)
+            st.caption(f"{len(uploaded_files)} PDF(s) selected · {total_mb:.1f} MB total")
+            if st.button("Upload Selected PDFs", use_container_width=True):
+                succeeded = []
+                failed = []
+                progress = st.progress(0, text="Preparing uploads...")
+                for index, uploaded_file in enumerate(uploaded_files, start=1):
+                    progress.progress(
+                        (index - 1) / len(uploaded_files),
+                        text=f"Processing {index}/{len(uploaded_files)}: {uploaded_file.name}"
+                    )
                     safe_name = uploaded_file.name.replace(" ", "_")
-                    file_path = f"data/uploads/{st.session_state.session_id}_{safe_name}"
-                    with open(file_path, "wb") as f:
-                        f.write(uploaded_file.getvalue())
-                    
+                    unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+                    file_path = f"data/uploads/{st.session_state.session_id}_{unique_name}"
                     try:
+                        with open(file_path, "wb") as f:
+                            f.write(uploaded_file.getvalue())
                         pages = process_pdf(file_path, safe_name)
-                        
-                        # Enforce a page limit (e.g., 15 pages) to prevent embedding memory spikes
+                        if not pages:
+                            raise ValueError("No readable pages were extracted.")
                         if len(pages) > 15:
-                            st.warning(f"⚠️ Document has {len(pages)} pages. Only the first 15 pages were processed to respect server limits.")
+                            st.warning(
+                                f"{safe_name} has {len(pages)} pages; only the first 15 will be processed."
+                            )
                             pages = pages[:15]
-                            
                         chunks = chunk_text(pages)
+                        if not chunks:
+                            raise ValueError("No text chunks could be created from this PDF.")
                         add_documents(chunks, st.session_state.session_id)
-                        st.success(f"{safe_name} uploaded securely.")
-                    except Exception as e:
-                        st.error(f"Error processing PDF: {e}")
+                        succeeded.append(safe_name)
+                    except Exception as exc:
+                        failed.append(f"{safe_name}: {type(exc).__name__}: {exc}")
+                    progress.progress(
+                        index / len(uploaded_files),
+                        text=f"Processed {index}/{len(uploaded_files)} files"
+                    )
+                progress.empty()
+                if succeeded:
+                    st.success(f"Processed {len(succeeded)} PDF(s): " + ", ".join(succeeded))
+                if failed:
+                    st.error("Some files failed:\n" + "\n".join(failed))
+                if succeeded:
+                    st.rerun()
 
     st.markdown("---")
     st.markdown("### Chat Context")
