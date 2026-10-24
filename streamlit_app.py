@@ -211,24 +211,61 @@ with st.sidebar:
             st.error("Demo file not found in sample_documents/ directory.")
 
     patient_label_input = st.text_input("Patient label for this upload (optional)", placeholder="e.g., Patient A; not identity verification")
-    st.caption("Or upload custom clinical PDF:")
-    uploaded_file = st.file_uploader("Upload PDF (Max 5MB)", type=["pdf"], label_visibility="collapsed")
-    if uploaded_file:
-        if uploaded_file.size > 5 * 1024 * 1024:
-            st.error("⚠️ File is too large! Please upload a clinical report smaller than 5MB.")
+    st.caption("Upload one or more synthetic clinical PDFs (maximum 5 files, 5MB each).")
+    uploaded_files = st.file_uploader(
+        "Upload PDF files",
+        type=["pdf"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        help="Select multiple PDFs at once. Each file must be 5MB or smaller; up to 5 files per batch."
+    )
+    max_file_bytes = 5 * 1024 * 1024
+    max_batch_files = 5
+    if uploaded_files:
+        oversized = [file.name for file in uploaded_files if file.size > max_file_bytes]
+        if len(uploaded_files) > max_batch_files:
+            st.error(f"Please select no more than {max_batch_files} PDFs per batch.")
+        elif oversized:
+            st.error("These files exceed the 5MB per-file limit: " + ", ".join(oversized))
         else:
-            if st.button("Upload Document", use_container_width=True):
-                with st.spinner("Processing document..."):
+            st.caption(f"{len(uploaded_files)} PDF(s) selected · {sum(file.size for file in uploaded_files) / (1024 * 1024):.1f} MB total")
+            if st.button("Upload Selected PDFs", use_container_width=True):
+                succeeded = []
+                failed = []
+                progress = st.progress(0, text="Preparing uploads...")
+                for index, uploaded_file in enumerate(uploaded_files, start=1):
+                    progress.progress((index - 1) / len(uploaded_files), text=f"Uploading {index}/{len(uploaded_files)}: {uploaded_file.name}")
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-                    data = {"session_id": st.session_state.session_id, "patient_label": patient_label_input.strip()}
+                    data = {
+                        "session_id": st.session_state.session_id,
+                        "patient_label": patient_label_input.strip(),
+                    }
                     try:
-                        res = requests.post(f"{API_URL}/upload", files=files, data=data, headers=_api_headers(), timeout=60)
+                        res = requests.post(
+                            f"{API_URL}/upload",
+                            files=files,
+                            data=data,
+                            headers=_api_headers(),
+                            timeout=120,
+                        )
                         if res.status_code == 200:
-                            st.success(f"{uploaded_file.name} uploaded to this demo session.")
+                            succeeded.append(uploaded_file.name)
                         else:
-                            st.error(f"Upload error: {res.text}")
-                    except:
-                        st.error("Backend offline.")
+                            try:
+                                detail = res.json().get("detail", res.text)
+                            except ValueError:
+                                detail = res.text
+                            failed.append(f"{uploaded_file.name}: HTTP {res.status_code} — {detail}")
+                    except requests.RequestException as exc:
+                        failed.append(f"{uploaded_file.name}: backend/network error ({type(exc).__name__})")
+                    progress.progress(index / len(uploaded_files), text=f"Processed {index}/{len(uploaded_files)} files")
+                progress.empty()
+                if succeeded:
+                    st.success(f"Uploaded {len(succeeded)} PDF(s): " + ", ".join(succeeded))
+                if failed:
+                    st.error("Some uploads failed:\n" + "\n".join(failed))
+                if succeeded:
+                    st.rerun()
 
     st.markdown("---")
     st.markdown("### Chat Context")
