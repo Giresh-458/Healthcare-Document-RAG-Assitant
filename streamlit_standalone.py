@@ -233,11 +233,27 @@ with tab2:
         if os.path.exists(file_path_demo):
             found_path = file_path_demo
         else:
-            search_name = f"{st.session_state.session_id}_{selected_doc}"
-            user_path = os.path.join("data", "uploads", search_name)
-            if os.path.exists(user_path):
-                found_path = user_path
-                
+            # Uploads are stored as:
+            # <session_id>_<8-char-unique-id>_<safe_filename>
+            # Do not reconstruct the filename: find the exact saved file by its
+            # session prefix and filename suffix, including the unique ID.
+            uploads_dir = os.path.join("data", "uploads")
+            session_prefix = f"{st.session_state.session_id}_"
+            filename_suffix = f"_{selected_doc}"
+            if os.path.isdir(uploads_dir):
+                matching_paths = [
+                    os.path.join(uploads_dir, entry)
+                    for entry in os.listdir(uploads_dir)
+                    if entry.startswith(session_prefix)
+                    and entry.endswith(filename_suffix)
+                    and os.path.isfile(os.path.join(uploads_dir, entry))
+                ]
+                # list_documents() exposes filenames, not upload IDs. If the
+                # same filename was uploaded more than once, show the newest
+                # matching upload rather than failing to locate all candidates.
+                if matching_paths:
+                    found_path = max(matching_paths, key=os.path.getmtime)
+
         if found_path:
             with open(found_path, "rb") as f:
                 base64_pdf = base64.b64encode(f.read()).decode('utf-8')
