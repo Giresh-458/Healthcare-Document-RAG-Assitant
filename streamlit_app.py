@@ -34,7 +34,10 @@ st.markdown("""
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
     /* Hide Streamlit branding */
-    #MainMenu, footer, header { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
+    /* Keep Streamlit's header available so the sidebar expand/collapse control remains usable. */
+    header[data-testid="stHeader"] { visibility: visible !important; background: transparent !important; }
+    button[data-testid="collapsedControl"] { visibility: visible !important; display: flex !important; }
 
     /* Sidebar styling */
     section[data-testid="stSidebar"] {
