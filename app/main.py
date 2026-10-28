@@ -58,6 +58,17 @@ class AskRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     patient_label: Optional[str] = Field(default=None, max_length=128)
     session_id: str = Field(default="global", min_length=1, max_length=128)
+    system1_enabled: bool = False
+    system1_provider: Literal["codiv", "jevmodel", "laya"] = "codiv"
+    system1_api_key: str = Field(default="", max_length=512)
+    system1_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    system1_endpoint: Optional[str] = Field(default=None, max_length=512)
+
+
+class System1TestRequest(BaseModel):
+    provider: Literal["codiv", "jevmodel", "laya"] = "codiv"
+    api_key: str = Field(min_length=1, max_length=512)
+    endpoint: Optional[str] = Field(default=None, max_length=512)
 
 
 def _safe_component(value: str, label: str) -> str:
@@ -72,6 +83,24 @@ def _safe_component(value: str, label: str) -> str:
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.post("/system1/test", dependencies=[Depends(require_app_token)])
+def test_system1_endpoint(req: System1TestRequest):
+    """Probe connection to the selected System 1 provider with a non-sensitive sample."""
+    from app.system1 import get_system1_adapter, System1AuthError, System1QuotaError, System1Error
+    try:
+        adapter = get_system1_adapter(req.provider, api_key=req.api_key, endpoint=req.endpoint)
+        return adapter.test_connection()
+    except System1AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except System1QuotaError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except System1Error as exc:
+        status = exc.status_code if exc.status_code and 400 <= exc.status_code < 600 else 502
+        raise HTTPException(status_code=status, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unexpected error testing System 1 connection: {type(exc).__name__}")
 
 
 @app.post("/upload", dependencies=[Depends(require_app_token)])
@@ -213,6 +242,11 @@ async def ask_question_endpoint(req: AskRequest):
             question, req.provider, req.api_key,
             req.document_names, session_id,
             document_ids=req.document_ids, patient_label=patient_label or None,
+            system1_enabled=req.system1_enabled,
+            system1_provider=req.system1_provider,
+            system1_api_key=req.system1_api_key or None,
+            system1_threshold=req.system1_threshold,
+            system1_endpoint=req.system1_endpoint or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

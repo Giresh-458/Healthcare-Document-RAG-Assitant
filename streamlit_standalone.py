@@ -9,6 +9,7 @@ from app.pdf_processor import process_pdf
 from app.text_processor import chunk_text
 from app.vector_store import add_documents, list_documents
 from app.rag import answer_question
+from app.system1 import get_system1_adapter, SYSTEM1_PROVIDERS
 from app.config import OCR_ENABLED
 
 # ──────────────────────── SESSION ISOLATION ────────────────────────
@@ -32,7 +33,6 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     #MainMenu, footer { visibility: hidden; }
-    /* Keep Streamlit's header available so the sidebar expand/collapse control remains usable. */
     header[data-testid="stHeader"] { visibility: visible !important; background: transparent !important; }
     button[data-testid="collapsedControl"] { visibility: visible !important; display: flex !important; }
     section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%); }
@@ -51,15 +51,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ──────────────────────── HERO BANNER ────────────────────────
 st.markdown("""
 <div class="hero-banner">
     <h1>Healthcare Document Intelligence Platform</h1>
-    <p>Clinical report ingestion, adaptive hybrid retrieval, and grounded question answering with source traceability.</p>
+    <p>Clinical report ingestion, adaptive hybrid retrieval, and grounded question answering with System 1 decision-making.</p>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="pipeline-bar">
+    <span class="pipeline-badge" style="background:#1e1b4b; color:#818cf8; border-color:#4338ca;">⚡ System 1 Decision Gate</span>
     <span class="pipeline-badge">Hybrid BM25 + Dense Retrieval</span>
     <span class="pipeline-badge">Reciprocal Rank Fusion</span>
     <span class="pipeline-badge">Adaptive Query Routing</span>
@@ -71,9 +73,33 @@ st.markdown("""
 
 # ──────────────────────── SIDEBAR ────────────────────────
 with st.sidebar:
-    st.markdown("### LLM Configuration")
+    st.markdown("### System 2: Answer LLM")
     provider = st.selectbox("Provider", ["groq", "openai", "gemini"], index=0)
-    api_key = st.text_input("API Key", type="password", placeholder="Paste API key here...")
+    api_key = st.text_input("LLM API Key", type="password", placeholder="Paste API key here...")
+
+    st.markdown("---")
+    st.markdown("### System 1: Evidence Gate")
+    system1_enabled = st.checkbox("Enable System 1 Gate", value=True)
+    s1_options = {
+        "Codiv / OpenJev (openjev-latest) [Recommended]": "codiv",
+        "JevModel (typesafe/jev-1.13)": "jevmodel",
+        "Laya Studio (laya-latest)": "laya",
+    }
+    s1_label = st.selectbox("System 1 Provider", list(s1_options.keys()), index=0)
+    system1_provider = s1_options[s1_label]
+    system1_api_key = st.text_input("System 1 API Key", type="password", placeholder="Paste provider API key here...")
+
+    if st.button("Test System 1 Connection", use_container_width=True):
+        if not system1_api_key.strip():
+            st.error("Please enter a System 1 API key above.")
+        else:
+            with st.spinner("Testing connection..."):
+                try:
+                    adapter = get_system1_adapter(system1_provider, api_key=system1_api_key.strip())
+                    probe = adapter.test_connection()
+                    st.success(f"Verified: {probe['model']} ({probe['latency_ms']}ms, {probe['sample_decision_probability']*100:.1f}%)")
+                except Exception as ex:
+                    st.error(f"Connection failed: {ex}")
 
     st.markdown("---")
     st.markdown("### Document Management")
@@ -152,7 +178,7 @@ with st.sidebar:
         st.caption("Search within specific documents:")
         selected_chat_docs = st.multiselect("Document Filter", docs, default=[], label_visibility="collapsed")
         docs_to_send = selected_chat_docs if len(selected_chat_docs) > 0 else None
-        
+
         st.markdown("**Currently Indexed:**")
         for d in docs:
             st.markdown(f'<div class="doc-item">{html.escape(str(d))}</div>', unsafe_allow_html=True)
@@ -162,6 +188,21 @@ with st.sidebar:
 
 # ──────────────────────── HELPER ────────────────────────
 def render_assistant_extras(structured_data, route, metrics, sources):
+    s1_dec = (structured_data or {}).get("system1_decision") or (metrics or {}).get("system1_decision")
+    if s1_dec:
+        s1_status = s1_dec.get("status", "UNKNOWN")
+        s1_prob = s1_dec.get("probability", 0.0)
+        s1_model = s1_dec.get("model", "")
+        s1_lat = s1_dec.get("latency_sec", 0.0)
+        s1_retried = s1_dec.get("retry_performed", False)
+        border_col = "#10b981" if s1_status == "SUFFICIENT" else ("#f59e0b" if s1_status == "INSUFFICIENT" else "#ef4444")
+        retry_msg = " [Bounded Retry Used]" if s1_retried else ""
+        st.markdown(
+            f'<div style="background:#f8fafc; border-left:4px solid {border_col}; padding:8px 12px; margin:6px 0; font-size:0.82rem;">'
+            f'<strong>⚡ System 1 Gate:</strong> {s1_status} ({s1_model} · {s1_prob*100:.1f}% sufficiency · {s1_lat:.2f}s{retry_msg})</div>',
+            unsafe_allow_html=True
+        )
+
     st.markdown(f"**Confidence:** `{structured_data.get('confidence', 'N/A')}`")
     entities = (structured_data or {}).get("medical_entities", [])
     if entities:
@@ -180,7 +221,7 @@ with tab1:
         st.session_state.messages = []
 
     chat_container = st.container()
-    
+
     with chat_container:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
@@ -190,7 +231,7 @@ with tab1:
 
     if prompt := st.chat_input("Ask about patient findings, lab values, or reference ranges..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
+
         with chat_container:
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -203,9 +244,13 @@ with tab1:
                 else:
                     with st.spinner("Routing query, retrieving context, generating response..."):
                         try:
-                            # Bypass FastAPI and call backend Python functions directly!
-                            data = answer_question(prompt, provider, api_key, docs_to_send, st.session_state.session_id)
-                            
+                            data = answer_question(
+                                prompt, provider, api_key, docs_to_send, st.session_state.session_id,
+                                system1_enabled=system1_enabled,
+                                system1_provider=system1_provider,
+                                system1_api_key=system1_api_key.strip(),
+                            )
+
                             answer = data.get("answer", "")
                             sources = data.get("sources", [])
                             metrics = data.get("metrics", {})
@@ -231,15 +276,11 @@ with tab2:
     if docs:
         selected_doc = st.selectbox("Select a document to view", docs)
         file_path_demo = os.path.join("sample_documents", selected_doc)
-        
+
         found_path = None
         if os.path.exists(file_path_demo):
             found_path = file_path_demo
         else:
-            # Uploads are stored as:
-            # <session_id>_<8-char-unique-id>_<safe_filename>
-            # Do not reconstruct the filename: find the exact saved file by its
-            # session prefix and filename suffix, including the unique ID.
             uploads_dir = os.path.join("data", "uploads")
             session_prefix = f"{st.session_state.session_id}_"
             filename_suffix = f"_{selected_doc}"
@@ -251,9 +292,6 @@ with tab2:
                     and entry.endswith(filename_suffix)
                     and os.path.isfile(os.path.join(uploads_dir, entry))
                 ]
-                # list_documents() exposes filenames, not upload IDs. If the
-                # same filename was uploaded more than once, show the newest
-                # matching upload rather than failing to locate all candidates.
                 if matching_paths:
                     found_path = max(matching_paths, key=os.path.getmtime)
 

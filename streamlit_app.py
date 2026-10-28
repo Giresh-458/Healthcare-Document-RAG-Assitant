@@ -46,6 +46,7 @@ st.markdown("""
     section[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
     section[data-testid="stSidebar"] .stSelectbox label,
     section[data-testid="stSidebar"] .stTextInput label,
+    section[data-testid="stSidebar"] .stCheckbox label,
     section[data-testid="stSidebar"] .stFileUploader label {
         color: #94a3b8 !important;
         font-size: 0.8rem;
@@ -78,6 +79,11 @@ st.markdown("""
         font-weight: 600;
         letter-spacing: 0.02em;
         border: 1px solid #334155;
+    }
+    .pipeline-badge-highlight {
+        background: #1e1b4b;
+        color: #818cf8;
+        border: 1px solid #4338ca;
     }
 
     /* Metrics card row */
@@ -165,13 +171,14 @@ st.markdown("""
 st.markdown("""
 <div class="hero-banner">
     <h1>Healthcare Document Intelligence Platform</h1>
-    <p>Clinical report ingestion, adaptive hybrid retrieval, and grounded question answering with source traceability.</p>
+    <p>Clinical report ingestion, adaptive hybrid retrieval, System 1 decision-making gate, and grounded System 2 LLM answers.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # Pipeline feature badges
 st.markdown("""
 <div class="pipeline-bar">
+    <span class="pipeline-badge pipeline-badge-highlight">⚡ System 1 Decision Gate</span>
     <span class="pipeline-badge">Hybrid BM25 + Dense Retrieval</span>
     <span class="pipeline-badge">Reciprocal Rank Fusion</span>
     <span class="pipeline-badge">Adaptive Query Routing</span>
@@ -185,9 +192,85 @@ st.markdown("""
 
 # ──────────────────────── SIDEBAR ────────────────────────
 with st.sidebar:
-    st.markdown("### LLM Configuration")
-    provider = st.selectbox("Provider", ["groq", "openai", "gemini"], index=0)
-    api_key = st.text_input("API Key", type="password", placeholder="Paste API key here...")
+    st.markdown("### System 2: Answer LLM")
+    st.caption("Generates grounded medical answers and citations.")
+    provider = st.selectbox("LLM Provider", ["groq", "openai", "gemini"], index=0)
+    api_key = st.text_input("LLM API Key", type="password", placeholder="Paste Groq/OpenAI/Gemini key...")
+
+    st.markdown("---")
+    st.markdown("### System 1: Evidence Decision Gate")
+    st.caption("Fast non-autoregressive decision model evaluating evidence sufficiency before LLM generation.")
+    
+    system1_enabled = st.checkbox("Enable System 1 Gate", value=True, help="When checked, System 1 validates evidence sufficiency and triggers bounded retrieval or safe abstention.")
+
+    s1_provider_options = {
+        "Codiv / OpenJev (openjev-latest) [Recommended]": "codiv",
+        "JevModel (typesafe/jev-1.13)": "jevmodel",
+        "Laya Studio (laya-latest)": "laya",
+    }
+    s1_label = st.selectbox("System 1 Provider", list(s1_provider_options.keys()), index=0)
+    system1_provider = s1_provider_options[s1_label]
+
+    if system1_provider == "codiv":
+        st.info(
+            "**Provider:** Codiv.ai\n\n"
+            "**Model:** `openjev-latest`\n\n"
+            "**Free Allowance:** Public experiment with 100M free input tokens per account (verified Oct 2026). "
+            "Quota tracked on Codiv dashboard. Returns HTTP 529 when at capacity.\n\n"
+            "*Note: OpenJev is an open-source model served via Jev-compatible API, not official Jev.*"
+        )
+    elif system1_provider == "jevmodel":
+        st.info(
+            "**Provider:** JevModel (`jevmodel.app`)\n\n"
+            "**Model:** `typesafe/jev-1.13`\n\n"
+            "**Free Allowance:** 5 successful free API runs per UTC day after email verification (verified Oct 2026), subject to capacity.\n\n"
+            "*Note: JevModel is an independent service, not official TypeSafe API.*"
+        )
+    elif system1_provider == "laya":
+        st.info(
+            "**Provider:** Laya Studio (`laya.studio`)\n\n"
+            "**Model:** `laya-latest`\n\n"
+            "**Free Allowance:** Limited trial of 5 free runs per new workspace (verified Oct 2026). "
+            "Swiss-hosted ModernBERT architecture with Jev wire compatibility."
+        )
+
+    system1_api_key = st.text_input("System 1 API Key", type="password", placeholder="Paste System 1 key...")
+
+    if st.button("Test System 1 Connection", use_container_width=True):
+        if not system1_api_key.strip():
+            st.error("Please enter a System 1 API key above to test connection.")
+        else:
+            with st.spinner("Sending probe request..."):
+                try:
+                    probe_payload = {
+                        "provider": system1_provider,
+                        "api_key": system1_api_key.strip(),
+                    }
+                    probe_res = requests.post(
+                        f"{API_URL}/system1/test",
+                        json=probe_payload,
+                        headers=_api_headers(),
+                        timeout=15,
+                    )
+                    if probe_res.status_code == 200:
+                        pdata = probe_res.json()
+                        st.success(
+                            f"Connection Verified!\n\n"
+                            f"- **Model:** `{pdata['model']}`\n"
+                            f"- **Latency:** {pdata['latency_ms']} ms\n"
+                            f"- **Test Decision:** {pdata['sample_decision_probability']*100:.1f}% sufficiency\n\n"
+                            f"**Allowance:** {pdata.get('free_tier_terms', 'Standard free terms apply.')}"
+                        )
+                    else:
+                        try:
+                            err_msg = probe_res.json().get("detail", probe_res.text)
+                        except Exception:
+                            err_msg = probe_res.text
+                        st.error(f"Test Failed (HTTP {probe_res.status_code}):\n{err_msg}")
+                except Exception as ex:
+                    st.error(f"Could not reach backend: {ex}")
+
+    st.caption("🔒 **Security & Privacy:** Keys are request-scoped and never stored to disk or emitted in logs. Queries and retrieved passages are transmitted to the chosen provider. External free tiers are not HIPAA-compliant; do not upload real personal health information.")
 
     st.markdown("---")
     st.markdown("### Document Management")
@@ -199,7 +282,6 @@ with st.sidebar:
         if os.path.exists(demo_path):
             with st.spinner("Indexing demo document..."):
                 with open(demo_path, "rb") as f:
-                    # Index the demo into this browser session, not a shared global corpus
                     files = {"file": ("hemoglobin-report-format.pdf", f.read(), "application/pdf")}
                     data = {"session_id": st.session_state.session_id, "patient_label": "Demo Patient"}
                     try:
@@ -208,7 +290,7 @@ with st.sidebar:
                             st.success("Demo report loaded successfully.")
                         else:
                             st.error(f"Upload error: {res.text}")
-                    except:
+                    except Exception:
                         st.error("Backend offline. Ensure FastAPI is running on port 8000.")
         else:
             st.error("Demo file not found in sample_documents/ directory.")
@@ -311,13 +393,13 @@ with st.sidebar:
         docs, records, docs_to_send, patient_label_to_send = [], [], None, None
         st.caption("Backend offline or document index unavailable.")
 
-
     st.markdown("---")
     st.markdown("### Sample Queries")
     st.caption("Common evaluation queries:")
     sample_qs = [
         "What is the hemoglobin level?",
         "Are there any abnormal values?",
+        "What was the patient's potassium level?",
         "Summarize the full report",
     ]
     for q in sample_qs:
@@ -326,7 +408,7 @@ with st.sidebar:
 
 # ──────────────────────── HELPER: RENDER ASSISTANT EXTRAS ────────────────────────
 def render_assistant_extras(structured_data, route, metrics, sources):
-    """Renders the rich UI elements below an assistant message."""
+    """Renders rich UI elements below an assistant message, including System 1 decisions."""
 
     # Doctor review warning
     if structured_data and structured_data.get("requires_doctor_review"):
@@ -334,6 +416,43 @@ def render_assistant_extras(structured_data, route, metrics, sources):
             '<div class="doctor-banner"><strong>Clinical Notice:</strong> This response discusses medical metrics '
             'and requires independent clinical verification.</div>',
             unsafe_allow_html=True
+        )
+
+    # System 1 Gate Decision Banner
+    s1_dec = (structured_data or {}).get("system1_decision") or (metrics or {}).get("system1_decision")
+    if s1_dec:
+        s1_status = s1_dec.get("status", "UNKNOWN")
+        s1_prob = s1_dec.get("probability", 0.0)
+        s1_model = s1_dec.get("model", "")
+        s1_lat = s1_dec.get("latency_sec", 0.0)
+        s1_retried = s1_dec.get("retry_performed", False)
+        s1_err = s1_dec.get("error_message")
+
+        if s1_status == "SUFFICIENT":
+            border_color = "#10b981"
+            status_text = "EVIDENCE SUFFICIENT"
+            badge_bg = "#ecfdf5"
+            badge_fg = "#065f46"
+        elif s1_status == "INSUFFICIENT":
+            border_color = "#f59e0b"
+            status_text = "EVIDENCE INSUFFICIENT (ABSTAINED)"
+            badge_bg = "#fffbeb"
+            badge_fg = "#92400e"
+        else:
+            border_color = "#ef4444"
+            status_text = f"DECISION GATE ERROR ({s1_err or 'Provider Error'})"
+            badge_bg = "#fef2f2"
+            badge_fg = "#991b1b"
+
+        retry_html = ' <span style="background:#e0e7ff; color:#3730a3; padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:600;">Bounded Retry Triggered</span>' if s1_retried else ""
+
+        st.markdown(
+            f'<div style="background:{badge_bg}; border-left:4px solid {border_color}; padding:8px 14px; border-radius:8px; margin:8px 0; font-size:0.83rem; color:{badge_fg};">'
+            f'<strong>⚡ System 1 Gate:</strong> <strong>{status_text}</strong> · '
+            f'Model: <code>{html.escape(str(s1_model))}</code> · '
+            f'Calibrated Sufficiency: <strong>{s1_prob*100:.1f}%</strong> · '
+            f'Gate Latency: {s1_lat:.2f}s{retry_html}</div>',
+            unsafe_allow_html=True,
         )
 
     # Metrics cards row
@@ -356,14 +475,14 @@ def render_assistant_extras(structured_data, route, metrics, sources):
         with cols[2]:
             fp = (metrics or {}).get("answer_context_token_overlap_heuristic", "—")
             st.markdown(
-                f'<div class="metric-card"><div class="label">Answer/context token overlap (heuristic)</div>'
+                f'<div class="metric-card"><div class="label">Token Overlap (Heuristic)</div>'
                 f'<div class="value blue">{fp}</div></div>',
                 unsafe_allow_html=True
             )
         with cols[3]:
             lat = (metrics or {}).get("latency_sec", "—")
             st.markdown(
-                f'<div class="metric-card"><div class="label">Latency</div>'
+                f'<div class="metric-card"><div class="label">Total Latency</div>'
                 f'<div class="value blue">{lat}s</div></div>',
                 unsafe_allow_html=True
             )
@@ -389,7 +508,7 @@ with tab1:
         st.session_state.messages = []
 
     chat_container = st.container()
-    
+
     # Render history
     with chat_container:
         for msg in st.session_state.messages:
@@ -406,7 +525,7 @@ with tab1:
     # User input
     if prompt := st.chat_input("Ask about patient findings, lab values, or reference ranges..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
+
         with chat_container:
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -415,16 +534,21 @@ with tab1:
                 if not docs:
                     st.error("⚠️ Please upload a document or load the demo report first.")
                 elif not api_key:
-                    st.error("⚠️ Please provide an API key in the sidebar configuration to proceed.")
+                    st.error("⚠️ Please provide a System 2 LLM API key in the sidebar configuration to proceed.")
+                elif system1_enabled and not system1_api_key.strip():
+                    st.warning("⚠️ System 1 Gate is enabled but no System 1 API key was provided. Enter a System 1 key in the sidebar, or uncheck the gate to run baseline System 2.")
                 else:
-                    with st.spinner("Routing query, retrieving context, generating response..."):
+                    with st.spinner("Retrieving evidence, evaluating System 1 gate, generating answer..."):
                         payload = {
-                            "question": prompt, 
-                            "provider": provider, 
+                            "question": prompt,
+                            "provider": provider,
                             "api_key": api_key,
                             "document_ids": docs_to_send,
                             "patient_label": patient_label_to_send,
-                            "session_id": st.session_state.session_id
+                            "session_id": st.session_state.session_id,
+                            "system1_enabled": system1_enabled,
+                            "system1_provider": system1_provider,
+                            "system1_api_key": system1_api_key.strip(),
                         }
                         try:
                             res = requests.post(f"{API_URL}/ask", json=payload, headers=_api_headers(), timeout=60)
@@ -464,9 +588,7 @@ with tab2:
                 viewer_options = {f"{r['document_name']} · {r.get('patient_label', 'unspecified')} · {r['document_id'][-8:]}": r for r in doc_records}
                 selected_doc_label = st.selectbox("Select an upload to view", list(viewer_options.keys()))
                 selected_doc = viewer_options[selected_doc_label]
-                
-                # Fetch the PDF from the API that owns the upload. The Streamlit host
-                # may not share a filesystem with the FastAPI service.
+
                 try:
                     pdf_res = requests.get(
                         f"{API_URL}/document-pdf",
@@ -491,5 +613,5 @@ with tab2:
                 st.info("No documents uploaded yet. Please upload a document or load the demo from the sidebar.")
         else:
             st.error("Could not fetch documents from backend.")
-    except:
+    except Exception:
         st.error("Backend offline. Cannot fetch documents.")

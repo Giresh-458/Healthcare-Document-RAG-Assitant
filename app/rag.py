@@ -9,6 +9,7 @@ from app.metrics import RagMetrics
 from app.query_router import QueryRouter
 from app.config import TOP_K
 from app.schemas import MedicalAnswer
+from app.system1 import evaluate_evidence_sufficiency, DecisionResult, DEFAULT_SUFFICIENCY_THRESHOLD
 
 
 def get_llm(provider: str, api_key: str):
@@ -117,8 +118,18 @@ def answer_question(
     session_id: str = "global",
     document_ids: Optional[List[str]] = None,
     patient_label: Optional[str] = None,
+    system1_enabled: bool = False,
+    system1_provider: str = "codiv",
+    system1_api_key: Optional[str] = None,
+    system1_threshold: float = DEFAULT_SUFFICIENCY_THRESHOLD,
+    system1_endpoint: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Answer from the selected session and optional patient/document scope."""
+    """Answer from the selected session and optional patient/document scope.
+
+    Workflow:
+    User Question -> Retrieve Evidence -> System 1 Decision Gate (if enabled)
+    -> System 2 LLM generates grounded answer -> Display answer with sources.
+    """
     start_time = time.time()
     asks_all = bool(re.search(r"\b(all|every|across|each)\b", question, re.I))
     asks_hemoglobin = bool(re.search(r"\b(hemoglobin|haemoglobin|hgb|hb)\b", question, re.I))
@@ -162,6 +173,126 @@ def answer_question(
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
         }
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # SYSTEM 1 EVIDENCE-SUFFICIENCY DECISION GATE
+    # ─────────────────────────────────────────────────────────────────────────
+    system1_decision_dict: Optional[Dict[str, Any]] = None
+
+    if system1_enabled and system1_api_key and system1_api_key.strip():
+        decision = evaluate_evidence_sufficiency(
+            question=question,
+            chunks=relevant_chunks,
+            provider=system1_provider,
+            api_key=system1_api_key,
+            threshold=system1_threshold,
+            endpoint=system1_endpoint,
+        )
+
+        # Conservative Decision Handling Policy:
+        # B. If evidence is INSUFFICIENT, attempt a bounded retrieval improvement ONCE.
+        if decision.status == "INSUFFICIENT":
+            expanded_k = k_value * 2
+            expanded_chunks = HybridRetriever.search(
+                question, top_k=expanded_k, document_names=document_names,
+                session_id=session_id, document_ids=document_ids, patient_label=patient_label,
+            )
+            # If new chunks were uncovered, evaluate once more with System 1
+            if len(expanded_chunks) > len(relevant_chunks):
+                retry_decision = evaluate_evidence_sufficiency(
+                    question=question,
+                    chunks=expanded_chunks,
+                    provider=system1_provider,
+                    api_key=system1_api_key,
+                    threshold=system1_threshold,
+                    endpoint=system1_endpoint,
+                )
+                retry_decision.retry_performed = True
+                if retry_decision.status == "SUFFICIENT":
+                    relevant_chunks = expanded_chunks
+                    decision = retry_decision
+                else:
+                    decision = retry_decision
+
+            # If still insufficient after bounded retry: abstain with clear clinical guidance
+            if decision.status == "INSUFFICIENT":
+                sources, seen = [], set()
+                for chunk in relevant_chunks:
+                    source = _source(chunk)
+                    key = (source["document_id"], source["document"], source["page"])
+                    if key not in seen:
+                        seen.add(key)
+                        sources.append(source)
+
+                abstention_answer = (
+                    "Based on the available healthcare documents in your selected scope, "
+                    "there is insufficient evidence to answer your question accurately.\n\n"
+                    "Clinical Recommendation: Please consult a qualified healthcare professional "
+                    "or physician for medical advice, diagnosis, or interpretation of health records. "
+                    "You may also verify whether the uploaded document contains the specific lab test or report section."
+                )
+                total_latency = round(time.time() - start_time, 2)
+                metrics = RagMetrics.log_metrics(question, abstention_answer, relevant_chunks, total_latency)
+                metrics["system1_decision"] = decision.to_dict()
+
+                return {
+                    "answer": abstention_answer,
+                    "sources": sources,
+                    "metrics": metrics,
+                    "route": route,
+                    "structured_data": {
+                        "confidence": "low",
+                        "medical_entities": [],
+                        "requires_doctor_review": True,
+                        "system1_decision": decision.to_dict(),
+                    },
+                    "abstained_by_system1": True,
+                }
+
+        # C & D. If System 1 returned an error or malformed response:
+        # Conservative policy halts unverified generation and provides clear recovery guidance.
+        if decision.status == "ERROR":
+            sources, seen = [], set()
+            for chunk in relevant_chunks:
+                source = _source(chunk)
+                key = (source["document_id"], source["document"], source["page"])
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(source)
+
+            error_notice = (
+                f"The System 1 evidence-sufficiency gate was unable to verify the evidence "
+                f"due to a provider issue ({decision.error_message}). "
+                "Under HealthRAG's conservative safety policy, unverified answer generation was prevented.\n\n"
+                "Recovery Guidance:\n"
+                "- Verify your System 1 API key in the sidebar configuration.\n"
+                "- Check the provider status and your remaining free quota.\n"
+                "- Alternatively, uncheck the System 1 gate to test the baseline System 2 LLM directly.\n\n"
+                "Clinical Recommendation: Always consult a licensed healthcare provider for clinical interpretation."
+            )
+            total_latency = round(time.time() - start_time, 2)
+            metrics = RagMetrics.log_metrics(question, error_notice, relevant_chunks, total_latency)
+            metrics["system1_decision"] = decision.to_dict()
+
+            return {
+                "answer": error_notice,
+                "sources": sources,
+                "metrics": metrics,
+                "route": route,
+                "structured_data": {
+                    "confidence": "low",
+                    "medical_entities": [],
+                    "requires_doctor_review": True,
+                    "system1_decision": decision.to_dict(),
+                },
+                "system1_error": True,
+            }
+
+        # Case A: SUFFICIENT
+        system1_decision_dict = decision.to_dict()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SYSTEM 2 LLM GROUNDED ANSWER GENERATION
+    # ─────────────────────────────────────────────────────────────────────────
     context_text = "\n\n---\n\n".join(
         [f"Source: {chunk['metadata']['document_name']} (Patient label: {chunk['metadata'].get('patient_label', 'unspecified')}; Page {chunk['metadata']['page']})\nContent:\n{chunk['text']}" for chunk in relevant_chunks]
     )
@@ -188,6 +319,9 @@ def answer_question(
         answer_text = response.content
         structured_data = {"confidence": "unknown", "medical_entities": [], "requires_doctor_review": True}
 
+    if system1_decision_dict:
+        structured_data["system1_decision"] = system1_decision_dict
+
     sources, seen = [], set()
     for chunk in relevant_chunks:
         source = _source(chunk)
@@ -197,4 +331,7 @@ def answer_question(
             sources.append(source)
     latency = round(time.time() - start_time, 2)
     metrics = RagMetrics.log_metrics(question, answer_text, relevant_chunks, latency)
+    if system1_decision_dict:
+        metrics["system1_decision"] = system1_decision_dict
+
     return {"answer": answer_text, "sources": sources, "metrics": metrics, "route": route, "structured_data": structured_data}
