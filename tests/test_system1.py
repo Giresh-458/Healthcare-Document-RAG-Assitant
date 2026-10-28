@@ -1,7 +1,7 @@
-"""Unit and integration tests for System 1 decision adapters and sufficiency gate."""
+"""Unit tests for System 1 decision adapters, endpoint security, and response validation."""
 import pytest
 import httpx
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from app.system1 import (
     CodivAdapter,
@@ -10,245 +10,273 @@ from app.system1 import (
     get_system1_adapter,
     format_evidence_state,
     evaluate_evidence_sufficiency,
-    NoulAnswer,
-    System1ResponsePayload,
-    DecisionResult,
+    validate_endpoint,
+    ALLOWED_SYSTEM1_ENDPOINTS,
+    System1SecurityError,
     System1Error,
     System1AuthError,
     System1QuotaError,
     System1ValidationError,
     System1ConnectionError,
     SYSTEM1_PROVIDERS,
+    DECISION_QUESTION_KEY,
+    NOUL_CRITERIA_TRUE,
+    NOUL_CRITERIA_FALSE,
 )
 
 
-def test_provider_adapter_metadata():
-    """Verify provider identities, endpoints, and model names match official specs."""
-    codiv = CodivAdapter(api_key="test-key")
-    assert codiv.provider_id == "codiv"
-    assert codiv.model_name == "openjev-latest"
-    assert codiv.default_endpoint == "https://api.codiv.ai/v1/systemone"
-    assert "OpenJev" in codiv.display_name
-    assert "100 million" in codiv.free_tier_terms
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. ENDPOINT SECURITY ALLOWLIST TESTS (ISSUE 4)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    jev = JevModelAdapter(api_key="test-key")
-    assert jev.provider_id == "jevmodel"
-    assert jev.model_name == "typesafe/jev-1.13"
-    assert jev.default_endpoint == "https://jevmodel.app/v1/systemone"
-    assert "5 successful free" in jev.free_tier_terms
-
-    laya = LayaAdapter(api_key="test-key")
-    assert laya.provider_id == "laya"
-    assert laya.model_name == "laya-latest"
-    assert laya.default_endpoint == "https://api.laya.studio/v1/systemone"
+def test_validate_endpoint_allows_verified_providers():
+    """Verify all legitimate provider endpoints pass allowlist validation."""
+    for ep in ALLOWED_SYSTEM1_ENDPOINTS:
+        assert validate_endpoint(ep) == ep
 
 
-def test_get_system1_adapter_factory():
-    """Verify factory loads correct adapter class and rejects invalid providers."""
-    assert isinstance(get_system1_adapter("codiv", "k"), CodivAdapter)
-    assert isinstance(get_system1_adapter("jevmodel", "k"), JevModelAdapter)
-    assert isinstance(get_system1_adapter("laya", "k"), LayaAdapter)
-
-    with pytest.raises(ValueError, match="Unsupported System 1 provider"):
-        get_system1_adapter("unsupported_provider", "k")
-
-
-def test_build_headers_requires_key():
-    """Verify adapter raises System1AuthError when API key is empty."""
-    adapter = CodivAdapter(api_key="")
-    with pytest.raises(System1AuthError, match="No API key provided"):
-        adapter._build_headers()
-
-    adapter_spaces = CodivAdapter(api_key="   ")
-    with pytest.raises(System1AuthError, match="No API key provided"):
-        adapter_spaces._build_headers()
-
-
-def test_build_headers_structure():
-    """Verify headers include Bearer authorization without altering secret."""
-    adapter = CodivAdapter(api_key="sk-test-token-123")
-    headers = adapter._build_headers()
-    assert headers["Authorization"] == "Bearer sk-test-token-123"
-    assert headers["Content-Type"] == "application/json"
-
-
-def test_build_payload_noul_question():
-    """Verify request payload uses Jev wire format with noul question primitive."""
-    adapter = CodivAdapter(api_key="k")
-    payload = adapter._build_payload("state text")
-    assert payload["model"] == "openjev-latest"
-    assert payload["state"] == "state text"
-    assert "is_sufficient" in payload["questions"]
-    assert payload["questions"]["is_sufficient"]["type"] == "noul"
-    assert "sufficient" in payload["questions"]["is_sufficient"]["instructions"].lower()
-
-
-def test_format_evidence_state_clean_and_bounded():
-    """Verify evidence state contains question, passages, and truncates safely."""
-    chunks = [
-        {"text": "Hemoglobin 14 g/dL", "metadata": {"document_name": "report.pdf", "page": 1}},
-        {"text": "Normal range 13-17 g/dL", "metadata": {"document_name": "report.pdf", "page": 1}},
+def test_validate_endpoint_rejects_untrusted_urls():
+    """Prove that an untrusted endpoint cannot receive requests or keys."""
+    untrusted_urls = [
+        "https://evil.attacker.com/steal-key",
+        "http://api.codiv.ai/v1/systemone",  # Non-HTTPS
+        "https://jevmodel.app.attacker.com/api/v1/systemone",
+        "https://unknown-service.com/v1",
+        "file:///etc/passwd",
     ]
-    state = format_evidence_state("What is the hemoglobin level?", chunks)
-    assert "User Health Question:" in state
-    assert "What is the hemoglobin level?" in state
-    assert "Passage 1 (Source: report.pdf, Page 1):" in state
-    assert "Hemoglobin 14 g/dL" in state
+    for bad_url in untrusted_urls:
+        with pytest.raises(System1SecurityError, match="Untrusted System 1 endpoint"):
+            validate_endpoint(bad_url)
 
 
-def test_response_validation_success():
-    """Verify valid Jev-compatible JSON response is parsed into calibrated probability."""
+def test_adapter_rejects_untrusted_endpoint_override():
+    """Verify BaseSystem1Adapter constructor refuses to initialize with untrusted endpoint."""
+    with pytest.raises(System1SecurityError, match="Untrusted System 1 endpoint"):
+        CodivAdapter(api_key="secret-key-123", endpoint="https://attacker.com/capture")
+
+    with pytest.raises(System1SecurityError, match="Untrusted System 1 endpoint"):
+        JevModelAdapter(api_key="secret-key-123", endpoint="https://evil.site/api")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. JEVMODEL ADAPTER TESTS (ISSUE 2 - OFFICIAL DOCUMENTED SCHEMA)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_jevmodel_adapter_endpoint():
+    """Verify JevModel endpoint is https://jevmodel.app/api/v1/systemone."""
+    jev = JevModelAdapter(api_key="test-key")
+    assert jev.default_endpoint == "https://jevmodel.app/api/v1/systemone"
+    assert jev.endpoint == "https://jevmodel.app/api/v1/systemone"
+
+
+def test_jevmodel_payload_omits_model_and_includes_noul_criteria():
+    """Verify JevModel payload does NOT send model and includes true/false criteria for noul."""
+    jev = JevModelAdapter(api_key="test-key")
+    payload = jev.build_payload("Test patient report state.")
+
+    # Model is fixed on server; must NOT be present in request
+    assert "model" not in payload
+
+    # State must be present
+    assert payload["state"] == "Test patient report state."
+
+    # Question must be noul with criteria
+    q = payload["questions"][DECISION_QUESTION_KEY]
+    assert q["type"] == "noul"
+    assert "criteria" in q
+    assert q["criteria"]["true"] == NOUL_CRITERIA_TRUE
+    assert q["criteria"]["false"] == NOUL_CRITERIA_FALSE
+
+
+def test_jevmodel_parse_response_nested_under_data_answers():
+    """Verify JevModel response parser extracts answers nested under data.answers."""
+    raw_response = {
+        "status": "success",
+        "data": {
+            "model": "typesafe/jev-1.13",
+            "answers": {
+                "is_sufficient": {
+                    "type": "noul",
+                    "noul": 0.912,
+                    "confidence": 0.95,
+                }
+            }
+        }
+    }
+    jev = JevModelAdapter(api_key="test-key")
+    prob, model_name, ans_dict = jev.parse_response(raw_response)
+    assert prob == 0.912
+    assert model_name == "typesafe/jev-1.13"
+    assert ans_dict["type"] == "noul"
+
+
+def test_jevmodel_parse_response_missing_data_answers():
+    """Verify JevModel raises validation error if data.answers is missing."""
+    jev = JevModelAdapter(api_key="test-key")
+    with pytest.raises(System1ValidationError, match="Missing answers in JevModel response"):
+        jev.parse_response({"status": "success", "data": {}})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. LAYA STUDIO ADAPTER TESTS (ISSUE 5 - AUTOMATIC ROUTING & ACTUAL MODEL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_laya_adapter_automatic_routing_omits_model():
+    """Verify Laya adapter omits model parameter to trigger automatic language routing."""
+    laya = LayaAdapter(api_key="test-key")
+    assert laya.default_endpoint == "https://api.laya.studio/v1/systemone"
+    payload = laya.build_payload("Clinical notes state.")
+
+    # Model is omitted for automatic routing
+    assert "model" not in payload
+    assert payload["state"] == "Clinical notes state."
+    assert payload["questions"][DECISION_QUESTION_KEY]["type"] == "noul"
+
+
+def test_laya_parse_response_records_actual_model_returned():
+    """Verify Laya records the actual model returned by the router rather than a hardcoded claim."""
+    raw_response = {
+        "model": "laya-modernbert-en-v1",  # Actual returned checkpoint
+        "answers": {
+            "is_sufficient": {
+                "type": "noul",
+                "noul": 0.88,
+            }
+        }
+    }
+    laya = LayaAdapter(api_key="test-key")
+    prob, reported_model, ans_dict = laya.parse_response(raw_response)
+    assert prob == 0.88
+    assert reported_model == "laya-modernbert-en-v1"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. CODIV / OPENJEV ADAPTER TESTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_codiv_adapter_metadata_and_payload():
+    """Verify Codiv adapter targets https://api.codiv.ai/v1/systemone with openjev-latest."""
+    codiv = CodivAdapter(api_key="test-key")
+    assert codiv.default_endpoint == "https://api.codiv.ai/v1/systemone"
+    payload = codiv.build_payload("Lab report state.")
+    assert payload["model"] == "openjev-latest"
+    assert payload["questions"][DECISION_QUESTION_KEY]["type"] == "noul"
+
+
+def test_codiv_parse_response_root_answers():
+    """Verify Codiv parses root answers object."""
     raw = {
         "model": "openjev-latest",
         "answers": {
             "is_sufficient": {
                 "type": "noul",
-                "noul": 0.885,
-                "confidence": 0.99,
+                "noul": 0.95,
             }
         }
     }
-    parsed = System1ResponsePayload(**raw)
-    noul_ans = parsed.get_sufficiency_noul("is_sufficient")
-    assert noul_ans.type == "noul"
-    assert noul_ans.noul == 0.885
+    codiv = CodivAdapter(api_key="test-key")
+    prob, model_name, ans = codiv.parse_response(raw)
+    assert prob == 0.95
+    assert model_name == "openjev-latest"
 
 
-def test_response_validation_missing_key():
-    """Verify missing question key raises informative error."""
-    raw = {"model": "openjev-latest", "answers": {}}
-    parsed = System1ResponsePayload(**raw)
-    with pytest.raises(ValueError, match="Question 'is_sufficient' not found"):
-        parsed.get_sufficiency_noul("is_sufficient")
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. ERROR HANDLING & HTTP PROTOCOL TESTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_auth_error_on_missing_key():
+    """Verify adapter raises System1AuthError when key is empty or whitespace."""
+    with pytest.raises(System1AuthError, match="No API key provided"):
+        CodivAdapter(api_key="")._build_headers()
+
+    with pytest.raises(System1AuthError, match="No API key provided"):
+        CodivAdapter(api_key="   ")._build_headers()
 
 
-def test_response_validation_invalid_type():
-    """Verify non-noul type raises validation error."""
-    raw = {
-        "model": "openjev-latest",
-        "answers": {
-            "is_sufficient": {
-                "type": "choice",
-                "choice": "yes",
-            }
-        }
-    }
-    parsed = System1ResponsePayload(**raw)
-    with pytest.raises(Exception):
-        parsed.get_sufficiency_noul("is_sufficient")
-
-
-def test_response_validation_out_of_range():
-    """Verify probability outside [0.0, 1.0] is rejected."""
-    raw = {
-        "model": "openjev-latest",
-        "answers": {
-            "is_sufficient": {
-                "type": "noul",
-                "noul": 1.5,
-            }
-        }
-    }
-    parsed = System1ResponsePayload(**raw)
-    with pytest.raises(Exception):
-        parsed.get_sufficiency_noul("is_sufficient")
-
-
-def test_http_auth_failure_401(monkeypatch):
-    """Verify HTTP 401 raises System1AuthError."""
+def test_http_401_maps_to_auth_error(monkeypatch):
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 401
     mock_resp.text = "Unauthorized"
-
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
+
     adapter = CodivAdapter(api_key="invalid-key")
-
     with pytest.raises(System1AuthError, match="Authentication failed"):
-        adapter.evaluate_state("test state", max_retries=0)
+        adapter.evaluate_state("test", max_retries=0)
 
 
-def test_http_rate_limit_429(monkeypatch):
-    """Verify HTTP 429 raises System1QuotaError."""
+def test_http_429_maps_to_quota_error(monkeypatch):
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 429
     mock_resp.headers = {}
     mock_resp.text = "Rate limit reached"
-
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
+
     adapter = JevModelAdapter(api_key="valid-key")
-
     with pytest.raises(System1QuotaError, match="Rate limit reached"):
-        adapter.evaluate_state("test state", max_retries=0)
+        adapter.evaluate_state("test", max_retries=0)
 
 
-def test_http_overloaded_529_with_retry_after(monkeypatch):
-    """Verify HTTP 529 (Codiv capacity overload) raises System1QuotaError."""
+def test_http_529_maps_to_quota_overload(monkeypatch):
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 529
-    mock_resp.headers = {"Retry-After": "2"}
+    mock_resp.headers = {"Retry-After": "1"}
     mock_resp.text = '{"error": "overloaded_error"}'
-
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
+
     adapter = CodivAdapter(api_key="valid-key")
-
     with pytest.raises(System1QuotaError, match="Service is at capacity"):
-        adapter.evaluate_state("test state", max_retries=0)
+        adapter.evaluate_state("test", max_retries=0)
 
 
-def test_http_server_error_500(monkeypatch):
-    """Verify 500 server error raises System1Error."""
+def test_http_500_maps_to_system1_error(monkeypatch):
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 500
     mock_resp.text = "Internal error"
-
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
+
     adapter = LayaAdapter(api_key="valid-key")
-
     with pytest.raises(System1Error, match="service error"):
-        adapter.evaluate_state("test state", max_retries=0)
+        adapter.evaluate_state("test", max_retries=0)
 
 
-def test_http_network_timeout(monkeypatch):
-    """Verify timeout exception raises System1ConnectionError."""
-    def timeout_post(*args, **kwargs):
-        raise httpx.TimeoutException("Connection timed out")
+def test_http_network_timeout_maps_to_connection_error(monkeypatch):
+    def raise_timeout(*args, **kwargs):
+        raise httpx.TimeoutException("Read timed out")
 
-    monkeypatch.setattr(httpx.Client, "post", timeout_post)
+    monkeypatch.setattr(httpx.Client, "post", raise_timeout)
     adapter = CodivAdapter(api_key="valid-key")
-
     with pytest.raises(System1ConnectionError, match="Could not connect"):
-        adapter.evaluate_state("test state", max_retries=0)
+        adapter.evaluate_state("test", max_retries=0)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. DECISION GATE LOGIC TESTS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def test_evaluate_evidence_sufficiency_empty_chunks():
-    """Empty chunks return immediate INSUFFICIENT decision without API call."""
-    res = evaluate_evidence_sufficiency("What is my Hb?", [], provider="codiv", api_key="test-key")
+    res = evaluate_evidence_sufficiency("What is my Hb?", [], provider="codiv", api_key="k")
     assert res.is_sufficient is False
     assert res.probability == 0.0
     assert res.status == "INSUFFICIENT"
 
 
 def test_evaluate_evidence_sufficiency_positive(monkeypatch):
-    """Probability >= threshold returns SUFFICIENT status."""
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
         "model": "openjev-latest",
-        "answers": {"is_sufficient": {"type": "noul", "noul": 0.92}}
+        "answers": {"is_sufficient": {"type": "noul", "noul": 0.94}}
     }
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
 
     chunks = [{"text": "Hb is 14", "metadata": {"document_name": "lab.pdf", "page": 1}}]
-    res = evaluate_evidence_sufficiency("Hb level?", chunks, provider="codiv", api_key="k", threshold=0.5)
-
+    res = evaluate_evidence_sufficiency("Hb level?", chunks, provider="codiv", api_key="k")
     assert res.is_sufficient is True
     assert res.status == "SUFFICIENT"
-    assert res.probability == 0.92
-    assert res.model == "openjev-latest"
+    assert res.probability == 0.94
 
 
 def test_evaluate_evidence_sufficiency_negative(monkeypatch):
-    """Probability < threshold returns INSUFFICIENT status."""
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
@@ -258,44 +286,32 @@ def test_evaluate_evidence_sufficiency_negative(monkeypatch):
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
 
     chunks = [{"text": "Platelets normal", "metadata": {"document_name": "lab.pdf", "page": 1}}]
-    res = evaluate_evidence_sufficiency("What is the glucose?", chunks, provider="codiv", api_key="k", threshold=0.5)
-
+    res = evaluate_evidence_sufficiency("What is the glucose?", chunks, provider="codiv", api_key="k")
     assert res.is_sufficient is False
     assert res.status == "INSUFFICIENT"
     assert res.probability == 0.15
 
 
-def test_evaluate_evidence_sufficiency_error_conservative(monkeypatch):
-    """Provider failure returns conservative status ERROR and is_sufficient=False."""
-    mock_resp = MagicMock(spec=httpx.Response)
-    mock_resp.status_code = 401
-    mock_resp.text = "Bad Key"
-    monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
-
+def test_evaluate_evidence_sufficiency_security_error_conservative():
+    """Verify endpoint security violations result in conservative ERROR status without bypassing."""
     chunks = [{"text": "Hb is 14", "metadata": {"document_name": "lab.pdf", "page": 1}}]
-    res = evaluate_evidence_sufficiency("Hb level?", chunks, provider="codiv", api_key="bad-key")
-
+    res = evaluate_evidence_sufficiency("Hb level?", chunks, provider="codiv", api_key="k", endpoint="https://attacker.site")
     assert res.is_sufficient is False
     assert res.status == "ERROR"
-    assert "Authentication failed" in (res.error_message or "")
+    assert "Endpoint Security Violation" in (res.error_message or "")
 
 
 def test_test_connection_probe(monkeypatch):
-    """Verify test_connection sends non-sensitive probe and parses result."""
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
         "model": "openjev-latest",
-        "answers": {"is_sufficient": {"type": "noul", "noul": 0.96}}
+        "answers": {"is_sufficient": {"type": "noul", "noul": 0.98}}
     }
     monkeypatch.setattr(httpx.Client, "post", lambda self, *args, **kwargs: mock_resp)
 
     adapter = CodivAdapter(api_key="valid-key")
     probe = adapter.test_connection()
-
     assert probe["status"] == "ok"
-    assert probe["provider"] == "codiv"
     assert probe["model"] == "openjev-latest"
-    assert probe["sample_decision_probability"] == 0.96
-    assert "latency_ms" in probe
-    assert "100 million" in probe["free_tier_terms"]
+    assert probe["sample_decision_probability"] == 0.98

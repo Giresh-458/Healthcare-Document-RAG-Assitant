@@ -1,41 +1,30 @@
 {
   "summary": {
+    "mode": "deterministic_scenario_simulation",
+    "is_empirical_benchmark": false,
+    "disclaimer": "Notice: Deterministic scenario simulation for architectural verification; not an empirical live benchmark measurement.",
     "total_test_cases": 8,
     "answerable_count": 4,
     "unanswerable_count": 4,
-    "metrics": {
+    "simulated_scenarios": {
       "answer_correctness": {
-        "baseline": "4/8 (50.0%)",
-        "proposed": "7/8 (87.5%)",
-        "delta": "+37.5%"
+        "baseline": "4/8",
+        "proposed": "7/8"
       },
       "unsupported_answer_rate": {
-        "baseline": "4/4 (100.0%)",
-        "proposed": "0/4 (0.0%)",
-        "delta": "-100.0%"
+        "baseline": "4/4",
+        "proposed": "0/4"
       },
       "appropriate_abstention_rate": {
-        "baseline": "0/4 (0.0%)",
-        "proposed": "4/4 (100.0%)",
-        "delta": "+100.0%"
+        "baseline": "0/4",
+        "proposed": "4/4"
       },
       "false_abstention_rate": {
-        "baseline": "0/4 (0.0%)",
-        "proposed": "1/4 (25.0%)",
-        "delta": "0.0% (except 1 safe provider failure halt)"
+        "baseline": "0/4",
+        "proposed": "1/4"
       },
       "retrieval_retry_rate": {
-        "proposed": "4/8 (50.0%)"
-      },
-      "mean_faithfulness_overlap": {
-        "baseline": "0.473",
-        "proposed": "0.873",
-        "delta": "+0.400"
-      },
-      "mean_end_to_end_latency_sec": {
-        "baseline": "0.465s",
-        "proposed": "0.247s",
-        "delta": "-0.218s"
+        "proposed": "4/8"
       }
     }
   },
@@ -93,7 +82,7 @@
       "baseline_correct": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
-      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.\n\nClinical Recommendation: Please consult a qualified healthcare professional or physician for medical advice, diagnosis, or interpretation of health records.",
+      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
       "proposed_latency": 0.095,
       "proposed_system1_prob": 0.08,
       "proposed_system1_status": "INSUFFICIENT",
@@ -114,7 +103,7 @@
       "baseline_correct": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
-      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.\n\nClinical Recommendation: Please consult a qualified healthcare professional or physician for medical advice, diagnosis, or interpretation of health records.",
+      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
       "proposed_latency": 0.095,
       "proposed_system1_prob": 0.04,
       "proposed_system1_status": "INSUFFICIENT",
@@ -135,7 +124,7 @@
       "baseline_correct": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
-      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.\n\nClinical Recommendation: Please consult a qualified healthcare professional or physician for medical advice, diagnosis, or interpretation of health records.",
+      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
       "proposed_latency": 0.095,
       "proposed_system1_prob": 0.18,
       "proposed_system1_status": "INSUFFICIENT",
@@ -177,7 +166,7 @@
       "baseline_correct": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
-      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.\n\nClinical Recommendation: Please consult a qualified healthcare professional or physician for medical advice, diagnosis, or interpretation of health records.",
+      "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
       "proposed_latency": 0.095,
       "proposed_system1_prob": 0.22,
       "proposed_system1_status": "INSUFFICIENT",
@@ -198,7 +187,7 @@
       "baseline_correct": true,
       "baseline_unsupported": false,
       "baseline_abstained": false,
-      "proposed_answer": "The System 1 evidence-sufficiency gate was unable to verify the evidence due to a provider issue (HTTP 429 Rate Limit). Under HealthRAG's conservative safety policy, unverified answer generation was prevented.\n\nClinical Recommendation: Always consult a licensed healthcare provider.",
+      "proposed_answer": "The System 1 evidence-sufficiency gate was unable to verify the evidence due to a provider issue (HTTP 429).",
       "proposed_latency": 0.12,
       "proposed_system1_prob": 0.0,
       "proposed_system1_status": "ERROR",

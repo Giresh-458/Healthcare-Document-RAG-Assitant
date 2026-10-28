@@ -43,8 +43,8 @@ User Health Question
        │       │       │
        │       │       └── If Still Insufficient ──► SAFE ABSTENTION
        │       │                                     - Clear grounded refusal
-       │       │                                     - Clinical review notice
-       │       │                                     - No hallucinated values
+       │       │                                     - Clinical review advisory
+       │       │                                     - S2 generation skipped
        │
        ├──► [Provider Error / Malformed Response]
        │       │
@@ -66,13 +66,13 @@ User Health Question
 
 ---
 
-## 2. Supported System 1 Providers & Free Allowances
+## 2. Supported System 1 Providers & Verified API Contracts
 
-| Provider | Model Identity | Architecture / Relationship | Endpoint | Free Allowance (Verified Oct 2026) |
+| Provider | Model Identity / Routing | Official Endpoint | Request / Response Details | Free Allowance (Verified Oct 2026) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Codiv / OpenJev** *(Recommended)* | `openjev-latest` | Open-source System 1 model hosted via Jev-compatible API by Codiv.ai. *(OpenJev is not official Jev).* | `https://api.codiv.ai/v1/systemone` | **100M input tokens** free public experiment per account. Quota tracked in Codiv dashboard; returns HTTP 529 when at capacity. |
-| **JevModel** | `typesafe/jev-1.13` | Independent hosted API serving the TypeSafe Jev model. *(Independent service, not official TypeSafe API).* | `https://jevmodel.app/v1/systemone` | **5 free successful runs/day** UTC after email verification. |
-| **Laya Studio** | `laya-latest` | Swiss-hosted ModernBERT-based Jev wire-compatible decision model. | `https://api.laya.studio/v1/systemone` | **5 trial runs** per new workspace. |
+| **Codiv / OpenJev** *(Recommended)* | `openjev-latest` | `https://api.codiv.ai/v1/systemone` | Sends `model: "openjev-latest"`. Response has root `answers`. *(OpenJev is open-source; not official Jev).* | **100M input tokens** free public experiment per account. Quota tracked on Codiv dashboard; returns HTTP 529 with Retry-After when at capacity. |
+| **JevModel** | Server-fixed (`typesafe/jev-1.13`) | `https://jevmodel.app/api/v1/systemone` | Model parameter is fixed on server and **omitted** from request. Requires `criteria: {"true": "...", "false": "..."}` for noul. Responses nested under `data.answers`. | **5 free successful runs/day** UTC after email verification. Independent service, not official TypeSafe API. |
+| **Laya Studio** | Automatic language routing (omits `model`) | `https://api.laya.studio/v1/systemone` | Omit `model` parameter to use automatic language routing. HealthRAG records the actual model checkpoint reported in the server response. | **5 trial runs** per new workspace. Swiss-hosted ModernBERT architecture. |
 
 > [!NOTE]
 > Free allowances are verified as of October 2026 and are subject to provider terms. External free public experiment tiers do not offer SLA uptime guarantees or business associate agreements (BAA).
@@ -83,7 +83,7 @@ User Health Question
 
 HealthRAG implements a strict conservative policy:
 1. **Evidence Appears Sufficient ($p \ge 0.5$):**
-   - Retrieves chunks and question pass to System 2 LLM.
+   - Retrieved chunks and question pass to System 2 LLM.
    - LLM must ground answer strictly in retrieved context.
    - System 1 confidence is logged as decision telemetry, not proof of medical correctness.
 2. **Evidence Appears Insufficient ($p < 0.5$):**
@@ -93,15 +93,18 @@ HealthRAG implements a strict conservative policy:
 3. **Provider Failure / Rate Limit / Malformed Response:**
    - Conservative safety policy halts generation rather than silently assuming sufficiency.
    - Returns non-technical recovery instructions (checking keys, checking quota, or switching providers).
+4. **Missing Key Validation:**
+   - When System 1 is enabled, a valid API key is mandatory. The pipeline immediately raises a configuration error rather than silently bypassing the decision gate.
 
 ---
 
-## 4. Free API-Key Onboarding & Security
+## 4. Free API-Key Onboarding & Security Controls
 
-### Key Protections
+### Key Protections & Endpoint Security
+- **Strict HTTPS Endpoint Allowlist:** Arbitrary caller-controlled endpoint overrides are prohibited. Requests are strictly confined to verified provider endpoints (`ALLOWED_SYSTEM1_ENDPOINTS`), preventing secret exfiltration attacks.
 - **No Client-Side Leaks:** API keys never appear in frontend bundles, client assets, or Git.
-- **Request-Scoped Execution:** Keys are provided via the Streamlit sidebar per session and passed to the backend via POST requests. Keys are never written to disk or database.
-- **Header Sanitization:** API keys and authorization headers are stripped from application logs and error traces.
+- **Request-Scoped Execution:** Keys are provided via the Streamlit sidebar per session and passed in the JSON request body. Keys are never saved to disk or database.
+- **Log Sanitization:** API keys and authorization headers are stripped from application logs and error traces.
 - **Data Minimization:** Only the specific query and retrieved chunk excerpts are sent to external decision providers; no full vector database exports or patient identifiers are transmitted.
 - **No HIPAA Compliance Claimed:** External free public tiers are not HIPAA-compliant. Use synthetic or de-identified data.
 
@@ -114,32 +117,40 @@ HealthRAG implements a strict conservative policy:
 
 ---
 
-## 5. Offline Evaluation & Benchmark Results
+## 5. Evaluation Harness & Testing Methodology
 
-HealthRAG includes a reproducible offline evaluation suite (`eval/evaluate_system1.py`) comparing the baseline (System 2 only) with the proposed System 1 gate across 8 clinical scenarios (answerable, absent, partial evidence, ambiguous, differential noise, and provider failure).
+HealthRAG includes an evaluation framework (`eval/evaluate_system1.py`) supporting two distinct modes:
 
-### How to Run Evaluation
+### Mode A: Deterministic Scenario Simulation (Default / Offline)
+Executes synthetic scenario cases to verify pipeline routing, decision branching, bounded expansion, and safe abstention logic without incurring API fees or network flakiness.
+
 ```bash
 python -m eval.evaluate_system1
 ```
 
-### Empirical Benchmark Findings
+*Note: Simulation outputs are strictly for architectural logic verification and do NOT represent empirical benchmark measurements.*
 
-| Evaluation Metric | Baseline (System 2 Only) | Proposed (System 1 + System 2) | Engineering Contribution |
-| :--- | :---: | :---: | :--- |
-| **Answer Correctness** | 50.0% (4/8) | **87.5% (7/8)** | **+37.5% improvement** |
-| **Unsupported Answer Rate** | 100.0% (4/4) | **0.0% (0/4)** | **Eliminates hallucinations on absent data** |
-| **Appropriate Abstention Rate** | 0.0% (0/4) | **100.0% (4/4)** | **Safely abstains when evidence is missing** |
-| **False Abstention Rate** | 0.0% (0/4) | 0.0% (0/4)* | Zero false refusals on valid answerable cases |
-| **Retrieval Retry Rate** | N/A | 50.0% (4/8) | Automatically triggers bounded expansion |
-| **Mean Faithfulness Overlap** | 0.473 | **0.873** | **+0.400 higher grounding** |
-| **Mean End-to-End Latency** | 0.465s | **0.247s** | **-46.9% latency reduction on absent queries** |
+### Mode B: Live API Evaluation (`--live`)
+Executes real end-to-end RAG retrieval, real System 1 decision calls (OpenJev/JevModel/Laya), and real System 2 LLM generation (Groq/OpenAI), measuring actual wall-clock latency and live model completions.
 
-*\*Note: 1 simulated provider failure test halts safely under the conservative policy.*
+```bash
+python -m eval.evaluate_system1 --live
+```
+*(Requires `SYSTEM1_API_KEY` and `GROQ_API_KEY` or `OPENAI_API_KEY`).*
 
-**Key Takeaways:**
-- **Hallucination Prevention:** Without System 1, the baseline LLM generates plausible-sounding answers for unmentioned metrics (e.g., hallucinating normal potassium ranges or specific iron dosages). System 1 identifies missing evidence and abstains.
-- **Latency & Cost Reduction:** On unanswerable queries, System 1 abstains in **~95 ms**, skipping the expensive ~450 ms System 2 LLM generation call.
+### Architectural Logic Verification Scenarios
+
+| Scenario Category | Test Focus | Baseline Behavior (Ungated) | Gated Behavior (System 1 + 2) |
+| :--- | :--- | :--- | :--- |
+| **Answerable (Cases 1 & 2)** | Hemoglobin values & reference ranges | Generates answer | Passes gate -> System 2 generates answer |
+| **Absent Metrics (Cases 3 & 4)** | Unmeasured lab tests (potassium, CT) | Tends to fabricate normal values | Insufficient evidence -> Safely abstains |
+| **Partial Evidence (Case 5)** | Mentions condition, missing dosage | Suggests ungrounded dosages | Insufficient evidence -> Safely abstains |
+| **Ambiguous Scope (Case 6)** | Normality check on lab values | Generates answer | Passes gate -> System 2 generates answer |
+| **Contradictory / Noise (Case 7)** | Differential diagnosis list | Guesses specific diagnosis | Insufficient evidence -> Safely abstains |
+| **Provider Failure (Case 8)** | HTTP 429 / Timeout | N/A | Conservative safety halt (no bypass) |
+
+> [!IMPORTANT]
+> The scenario simulation verifies pipeline behavior; it does not constitute clinical validation. Clinical efficacy, false-abstention rates, and answer grounding must be validated against clinician-annotated datasets with independent physician review.
 
 ---
 
@@ -147,7 +158,7 @@ python -m eval.evaluate_system1
 
 - **Backend:** FastAPI, Uvicorn, Pydantic v2, HTTPX
 - **Frontend:** Streamlit with custom CSS and live metrics telemetry
-- **System 1 Decision Models:** OpenJev (`openjev-latest`), TypeSafe Jev (`typesafe/jev-1.13`), Laya (`laya-latest`)
+- **System 1 Decision Models:** OpenJev (`openjev-latest`), TypeSafe Jev (`typesafe/jev-1.13`), Laya Studio (Automatic routing)
 - **System 2 LLM Orchestration:** LangChain, LangChain-Groq, LangChain-OpenAI, LangChain-Google-GenAI
 - **Search & Vector Storage:** ChromaDB (Local persistent), HuggingFace Embeddings (`sentence-transformers/all-MiniLM-L6-v2`), Rank-BM25
 - **Document Processing:** PyMuPDF, Tesseract OCR fallback
@@ -174,7 +185,7 @@ pip install -r requirements.txt
 ```bash
 python -m pytest
 ```
-Runs 53 unit and integration tests covering provider adapters, Pydantic contracts, response validation, bounded retry, conservative fallbacks, and API endpoints.
+Runs 57 unit and integration tests covering provider adapters, JevModel criteria schemas, Laya automatic routing, endpoint allowlisting, missing key validation, bounded retry, conservative fallbacks, and API endpoints.
 
 ### 3. Launch Application
 ```bash
@@ -186,43 +197,5 @@ Starts:
 
 ---
 
-## 8. Repository Structure
-
-```
-Healthcare-Document-RAG-Assitant/
-├── app/
-│   ├── config.py             # Environment configuration
-│   ├── schemas.py            # Pydantic structured output models
-│   ├── system1.py            # System 1 decision adapters & sufficiency gate
-│   ├── main.py               # FastAPI REST API endpoints (/ask, /system1/test)
-│   ├── rag.py                # Grounded RAG orchestrator with System 1 gate
-│   ├── hybrid_retriever.py   # BM25 + Dense RRF fusion retriever
-│   ├── query_router.py       # Triage classifier (Factoid/Aggregation/Irrelevant)
-│   ├── phi_redactor.py       # Best-effort PHI pattern redaction
-│   ├── medical_ner.py        # Clinical entity extraction
-│   ├── text_processor.py     # Clean chunking with metadata tagging
-│   ├── vector_store.py       # ChromaDB persistence & singleton embeddings
-│   ├── pdf_processor.py      # PyMuPDF parser
-│   ├── ocr.py                # Tesseract OCR fallback
-│   └── metrics.py            # Diagnostic context precision & faithfulness
-├── eval/
-│   └── evaluate_system1.py   # Offline benchmark evaluation suite
-├── sample_documents/
-│   └── hemoglobin-report-format.pdf # Standard test laboratory report
-├── tests/
-│   ├── test_api.py           # FastAPI endpoint tests
-│   ├── test_system1.py       # System 1 adapter & validation unit tests
-│   ├── test_rag_system1.py   # System 1 + 2 integration & pipeline tests
-│   ├── test_retriever.py     # Retrieval filter tests
-│   └── test_text.py          # Processing and chunking tests
-├── streamlit_app.py          # Interactive web UI with System 1 configuration
-├── streamlit_standalone.py   # In-process standalone runner
-├── run.py                    # Dual-process launcher
-├── requirements.txt          # Python dependencies
-└── README.md                 # Project documentation
-```
-
----
-
-## 9. Disclaimer & Limitations
+## 8. Disclaimer & Limitations
 *This system is an educational prototype and is not a certified medical device. It does not provide clinical diagnoses, medical advice, or treatment decisions. Always consult a qualified physician or healthcare professional.*

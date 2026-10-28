@@ -41,7 +41,6 @@ def _source(chunk):
 def _all_hemoglobin_candidates(question: str, chunks: List[Dict], start_time: float):
     """Deterministic, transparent candidate scan; values still require source verification."""
     value_patterns = [
-        # Keep the value adjacent to the lab label; don't mistake "13-17" reference ranges for results.
         re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b\s*(?:[:=]\s*)?(\d{1,3}(?:\.\d+)?)(?!\s*[-–]\s*\d)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
         re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b\s*\([^\)\n]{1,20}\)\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)(?!\s*[-–]\s*\d)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
         re.compile(r"\b(\d{1,3}(?:\.\d+)?)\s*(g\s*/\s*d?l|g\s*/\s*l)\s*(?:of\s+)?(?:hemoglobin|haemoglobin|hgb|hb)\b", re.I),
@@ -131,6 +130,15 @@ def answer_question(
     -> System 2 LLM generates grounded answer -> Display answer with sources.
     """
     start_time = time.time()
+
+    # Fast configuration check: If System 1 is enabled, key cannot be missing or blank
+    if system1_enabled:
+        if not system1_api_key or not system1_api_key.strip():
+            raise ValueError(
+                f"System 1 evidence decision gate is enabled, but no API key was provided for provider '{system1_provider}'. "
+                "Please configure a valid System 1 API key or disable the System 1 gate to proceed with baseline System 2."
+            )
+
     asks_all = bool(re.search(r"\b(all|every|across|each)\b", question, re.I))
     asks_hemoglobin = bool(re.search(r"\b(hemoglobin|haemoglobin|hgb|hb)\b", question, re.I))
 
@@ -178,12 +186,12 @@ def answer_question(
     # ─────────────────────────────────────────────────────────────────────────
     system1_decision_dict: Optional[Dict[str, Any]] = None
 
-    if system1_enabled and system1_api_key and system1_api_key.strip():
+    if system1_enabled:
         decision = evaluate_evidence_sufficiency(
             question=question,
             chunks=relevant_chunks,
             provider=system1_provider,
-            api_key=system1_api_key,
+            api_key=system1_api_key.strip(),
             threshold=system1_threshold,
             endpoint=system1_endpoint,
         )
@@ -202,7 +210,7 @@ def answer_question(
                     question=question,
                     chunks=expanded_chunks,
                     provider=system1_provider,
-                    api_key=system1_api_key,
+                    api_key=system1_api_key.strip(),
                     threshold=system1_threshold,
                     endpoint=system1_endpoint,
                 )

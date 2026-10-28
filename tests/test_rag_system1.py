@@ -1,6 +1,6 @@
 """Integration tests for System 1 + System 2 HealthRAG pipeline, API endpoints, and evaluation."""
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -40,6 +40,47 @@ def test_baseline_rag_without_system1(monkeypatch):
     assert "abstained_by_system1" not in result
 
 
+def test_missing_system1_key_raises_configuration_error():
+    """Verify that enabling System 1 without supplying an API key raises a clear configuration error."""
+    with pytest.raises(ValueError, match="System 1 evidence decision gate is enabled, but no API key was provided"):
+        answer_question(
+            question="What is the hemoglobin level?",
+            provider="groq",
+            api_key="gsk-test-key",
+            system1_enabled=True,
+            system1_provider="codiv",
+            system1_api_key="",  # Missing key!
+        )
+
+    with pytest.raises(ValueError, match="System 1 evidence decision gate is enabled, but no API key was provided"):
+        answer_question(
+            question="What is the hemoglobin level?",
+            provider="groq",
+            api_key="gsk-test-key",
+            system1_enabled=True,
+            system1_provider="jevmodel",
+            system1_api_key="   ",  # Whitespace key!
+        )
+
+
+def test_api_ask_endpoint_rejects_enabled_system1_with_missing_key():
+    """Verify POST /ask endpoint returns HTTP 400 when System 1 is enabled without a key."""
+    resp = client.post(
+        "/ask",
+        json={
+            "question": "What is the hemoglobin level?",
+            "provider": "groq",
+            "api_key": "gsk-key",
+            "system1_enabled": True,
+            "system1_provider": "codiv",
+            "system1_api_key": "",
+            "session_id": "test-session",
+        }
+    )
+    assert resp.status_code == 400
+    assert "System 1 evidence decision gate is enabled, but no API key was provided" in resp.json()["detail"]
+
+
 def test_system1_sufficient_invokes_system2(monkeypatch):
     """When System 1 evaluates evidence as sufficient, System 2 generates the grounded answer."""
     mock_chat = MagicMock()
@@ -55,7 +96,6 @@ def test_system1_sufficient_invokes_system2(monkeypatch):
         {"id": "c1", "text": "HEMOGLOBIN 14 g/dl (13-17)", "metadata": {"document_name": "lab.pdf", "page": 1, "document_id": "doc1"}}
     ])
 
-    # System 1 mock decision: SUFFICIENT
     monkeypatch.setattr(
         "app.rag.evaluate_evidence_sufficiency",
         lambda question, chunks, **kwargs: DecisionResult(
@@ -293,13 +333,11 @@ def test_api_ask_endpoint_with_system1(monkeypatch):
 
 
 def test_offline_evaluation_suite():
-    """Verify offline evaluation benchmark executes and computes metrics."""
-    eval_result = run_evaluation()
+    """Verify offline evaluation harness executes and produces cleanly labeled simulation output."""
+    eval_result = run_evaluation(mode="simulation")
     assert "summary" in eval_result
     assert "cases" in eval_result
     assert len(eval_result["cases"]) == 8
     summary = eval_result["summary"]
-    metrics = summary["metrics"]
-    assert "answer_correctness" in metrics
-    assert "unsupported_answer_rate" in metrics
-    assert "appropriate_abstention_rate" in metrics
+    assert summary["mode"] == "deterministic_scenario_simulation"
+    assert "simulated_scenarios" in summary

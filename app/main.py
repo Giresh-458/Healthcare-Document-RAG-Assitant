@@ -62,13 +62,11 @@ class AskRequest(BaseModel):
     system1_provider: Literal["codiv", "jevmodel", "laya"] = "codiv"
     system1_api_key: str = Field(default="", max_length=512)
     system1_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    system1_endpoint: Optional[str] = Field(default=None, max_length=512)
 
 
 class System1TestRequest(BaseModel):
     provider: Literal["codiv", "jevmodel", "laya"] = "codiv"
     api_key: str = Field(min_length=1, max_length=512)
-    endpoint: Optional[str] = Field(default=None, max_length=512)
 
 
 def _safe_component(value: str, label: str) -> str:
@@ -90,7 +88,7 @@ def test_system1_endpoint(req: System1TestRequest):
     """Probe connection to the selected System 1 provider with a non-sensitive sample."""
     from app.system1 import get_system1_adapter, System1AuthError, System1QuotaError, System1Error
     try:
-        adapter = get_system1_adapter(req.provider, api_key=req.api_key, endpoint=req.endpoint)
+        adapter = get_system1_adapter(req.provider, api_key=req.api_key)
         return adapter.test_connection()
     except System1AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc))
@@ -118,7 +116,6 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     document_id = uuid.uuid4().hex
     final_path = os.path.join(UPLOAD_DIR, f"{safe_session}_{document_id}_{filename}")
-    # Each upload has its own path, even when filenames repeat.
     temp_path = final_path + ".uploading"
     total = 0
     try:
@@ -141,7 +138,6 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
         if not chunks:
             raise HTTPException(status_code=422, detail="No readable text found in the PDF")
 
-        # This label is metadata supplied by the uploader, not verified identity.
         add_documents(chunks, safe_session, document_id=document_id, patient_label=patient_label)
         os.replace(temp_path, final_path)
         return {
@@ -155,7 +151,6 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
     except HTTPException:
         raise
     except Exception:
-        # Do not expose local paths, provider details, or internal exception text.
         raise HTTPException(status_code=422, detail="Could not process this PDF")
     finally:
         if os.path.exists(temp_path):
@@ -246,7 +241,6 @@ async def ask_question_endpoint(req: AskRequest):
             system1_provider=req.system1_provider,
             system1_api_key=req.system1_api_key or None,
             system1_threshold=req.system1_threshold,
-            system1_endpoint=req.system1_endpoint or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
