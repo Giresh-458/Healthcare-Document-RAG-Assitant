@@ -2,12 +2,45 @@
   "summary": {
     "mode": "deterministic_scenario_simulation",
     "is_empirical_benchmark": false,
-    "disclaimer": "Notice: Deterministic scenario simulation for architectural verification; not an empirical live benchmark measurement.",
+    "disclaimer": "Notice: Deterministic scenario simulation for routing logic verification; NOT an empirical benchmark measurement.",
+    "proxy_metric_definitions": {
+      "proxy_keyword_correctness": "Evaluates presence of expected key tokens in the answer string. Proxy heuristic only; does NOT assess medical or clinical accuracy.",
+      "proxy_token_overlap_faithfulness": "Evaluates unigram lexical overlap between generated response and the actual retrieved evidence context chunks used (including expanded chunks if retry occurred). Proximity heuristic only; does NOT assess factual truthfulness or clinical grounding."
+    },
     "total_test_cases": 8,
     "answerable_count": 4,
     "unanswerable_count": 4,
+    "proxy_metrics_summary": {
+      "proxy_keyword_correctness": {
+        "baseline": "4/8",
+        "proposed": "7/8"
+      },
+      "unsupported_answer_rate": {
+        "baseline": "4/4",
+        "proposed": "0/4"
+      },
+      "appropriate_abstention_rate": {
+        "baseline": "0/4",
+        "proposed": "4/4"
+      },
+      "false_abstention_rate": {
+        "baseline": "0/4",
+        "proposed": "1/4"
+      },
+      "retrieval_retry_rate": {
+        "proposed": "4/8"
+      },
+      "mean_proxy_faithfulness": {
+        "baseline": 0.4734,
+        "proposed": 0.873
+      }
+    },
     "simulated_scenarios": {
       "answer_correctness": {
+        "baseline": "4/8",
+        "proposed": "7/8"
+      },
+      "proxy_keyword_correctness": {
         "baseline": "4/8",
         "proposed": "7/8"
       },
@@ -36,8 +69,8 @@
       "expected_answerable": true,
       "baseline_answer": "Based on the hematology report, the patient's hemoglobin value is 14 g/dl (Page 1).",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.625,
-      "baseline_correct": true,
+      "baseline_proxy_faithfulness": 0.625,
+      "baseline_proxy_correctness": true,
       "baseline_unsupported": false,
       "baseline_abstained": false,
       "proposed_answer": "Based on the hematology report, the patient's hemoglobin value is 14 g/dl (Page 1).",
@@ -45,8 +78,8 @@
       "proposed_system1_prob": 0.96,
       "proposed_system1_status": "SUFFICIENT",
       "proposed_retry_performed": false,
-      "proposed_faithfulness": 0.625,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 0.625,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": false
     },
@@ -57,8 +90,8 @@
       "expected_answerable": true,
       "baseline_answer": "The reference range for hemoglobin in this report is 13 - 17 g/dl.",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.6923,
-      "baseline_correct": true,
+      "baseline_proxy_faithfulness": 0.6923,
+      "baseline_proxy_correctness": true,
       "baseline_unsupported": false,
       "baseline_abstained": false,
       "proposed_answer": "The reference range for hemoglobin in this report is 13 - 17 g/dl.",
@@ -66,8 +99,8 @@
       "proposed_system1_prob": 0.94,
       "proposed_system1_status": "SUFFICIENT",
       "proposed_retry_performed": false,
-      "proposed_faithfulness": 0.6923,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 0.6923,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": false
     },
@@ -78,8 +111,8 @@
       "expected_answerable": false,
       "baseline_answer": "The patient's potassium level appears to be in the normal range around 4.0 mEq/L and troponin is negative.",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.2381,
-      "baseline_correct": false,
+      "baseline_proxy_faithfulness": 0.2381,
+      "baseline_proxy_correctness": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
       "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
@@ -87,8 +120,8 @@
       "proposed_system1_prob": 0.08,
       "proposed_system1_status": "INSUFFICIENT",
       "proposed_retry_performed": true,
-      "proposed_faithfulness": 1.0,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 1.0,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": true
     },
@@ -99,8 +132,8 @@
       "expected_answerable": false,
       "baseline_answer": "The chest CT scan shows clear lungs with no acute cardiopulmonary disease noted.",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.1538,
-      "baseline_correct": false,
+      "baseline_proxy_faithfulness": 0.1538,
+      "baseline_proxy_correctness": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
       "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
@@ -108,8 +141,8 @@
       "proposed_system1_prob": 0.04,
       "proposed_system1_status": "INSUFFICIENT",
       "proposed_retry_performed": true,
-      "proposed_faithfulness": 1.0,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 1.0,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": true
     },
@@ -120,8 +153,8 @@
       "expected_answerable": false,
       "baseline_answer": "A typical iron supplement dosage of ferrous sulfate 325 mg once daily is recommended for microcytic anemia.",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.2353,
-      "baseline_correct": false,
+      "baseline_proxy_faithfulness": 0.2353,
+      "baseline_proxy_correctness": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
       "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
@@ -129,8 +162,8 @@
       "proposed_system1_prob": 0.18,
       "proposed_system1_status": "INSUFFICIENT",
       "proposed_retry_performed": true,
-      "proposed_faithfulness": 1.0,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 1.0,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": true
     },
@@ -141,8 +174,8 @@
       "expected_answerable": true,
       "baseline_answer": "The hemoglobin level of 14 g/dl is within the normal reference range (13 - 17 g/dl) and is not abnormal.",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.6667,
-      "baseline_correct": true,
+      "baseline_proxy_faithfulness": 0.6667,
+      "baseline_proxy_correctness": true,
       "baseline_unsupported": false,
       "baseline_abstained": false,
       "proposed_answer": "The hemoglobin level of 14 g/dl is within the normal reference range (13 - 17 g/dl) and is not abnormal.",
@@ -150,8 +183,8 @@
       "proposed_system1_prob": 0.88,
       "proposed_system1_status": "SUFFICIENT",
       "proposed_retry_performed": false,
-      "proposed_faithfulness": 0.6667,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 0.6667,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": false
     },
@@ -162,8 +195,8 @@
       "expected_answerable": false,
       "baseline_answer": "The report notes decreased hemoglobin in thalassemia and increased in polycythemia, suggesting mild thalassemia trait.",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.5333,
-      "baseline_correct": false,
+      "baseline_proxy_faithfulness": 0.5333,
+      "baseline_proxy_correctness": false,
       "baseline_unsupported": true,
       "baseline_abstained": false,
       "proposed_answer": "Based on the available healthcare documents in your selected scope, there is insufficient evidence to answer your question accurately.",
@@ -171,8 +204,8 @@
       "proposed_system1_prob": 0.22,
       "proposed_system1_status": "INSUFFICIENT",
       "proposed_retry_performed": true,
-      "proposed_faithfulness": 1.0,
-      "proposed_correct": true,
+      "proposed_proxy_faithfulness": 1.0,
+      "proposed_proxy_correctness": true,
       "proposed_unsupported": false,
       "proposed_abstained": true
     },
@@ -183,8 +216,8 @@
       "expected_answerable": true,
       "baseline_answer": "The report was signed by pathologist Dr. A. K. Asthana, MBBS, MD (Page 1).",
       "baseline_latency": 0.465,
-      "baseline_faithfulness": 0.6429,
-      "baseline_correct": true,
+      "baseline_proxy_faithfulness": 0.6429,
+      "baseline_proxy_correctness": true,
       "baseline_unsupported": false,
       "baseline_abstained": false,
       "proposed_answer": "The System 1 evidence-sufficiency gate was unable to verify the evidence due to a provider issue (HTTP 429).",
@@ -192,8 +225,8 @@
       "proposed_system1_prob": 0.0,
       "proposed_system1_status": "ERROR",
       "proposed_retry_performed": false,
-      "proposed_faithfulness": 1.0,
-      "proposed_correct": false,
+      "proposed_proxy_faithfulness": 1.0,
+      "proposed_proxy_correctness": false,
       "proposed_unsupported": false,
       "proposed_abstained": true
     }

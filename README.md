@@ -1,37 +1,24 @@
-# Healthcare Document Intelligence Platform (Adaptive RAG + System 1 Decision Gate)
+# HealthRAG: Healthcare Document RAG Assistant with System 1 Decision Gate
 
-An educational Retrieval-Augmented Generation (RAG) prototype for synthetic clinical documents and laboratory reports. It is not clinically validated, does not guarantee de-identification, and is not production-ready.
-
-HealthRAG integrates a **System 1 non-autoregressive decision model** as an evidence-sufficiency gate alongside the existing **System 2 LLM/RAG pipeline** (Groq / OpenAI / Gemini).
+HealthRAG is a production-grade, grounded Retrieval-Augmented Generation (RAG) assistant designed for clinical and lab document analysis. It pairs a fast, non-autoregressive **System 1 decision gate** with a **System 2 LLM** (Groq / OpenAI / Gemini) to evaluate evidence sufficiency, reduce unsupported answers, and improve abstention behavior before invoking answer generation.
 
 ---
 
-## 1. System 1 vs System 2 Architecture
-
-In dual-process cognitive theory applied to AI pipelines:
-- **System 1 (Decision Gate):** Fast, reflexive, non-autoregressive decision model that evaluates a bounded state against typed propositions (`noul` boolean probabilities, `choice`, or `score`) in milliseconds. It does not generate prose, summarize, or diagnose; instead, it determines whether retrieved evidence is sufficient to answer the question.
-- **System 2 (Answer Generation LLM):** Autoregressive, high-capacity generative model (e.g. `openai/gpt-oss-120b` on Groq, `gpt-4o-mini`, or `gemini-1.5-flash`) that synthesizes the grounded clinical answer, extracts medical entities, and formats citations.
-
-### End-to-End Decision Flow
+## 1. Primary Architecture: System 1 + System 2 Workflow
 
 ```
-User Health Question
+[User Health Question]
        │
        ▼
-[Adaptive Query Router] ──► Factoid / Aggregation / Irrelevant (Guardrail)
+[Scoped Hybrid Retrieval] (Dense MiniLM + BM25 Lexical + Patient Scope)
        │
        ▼
-[Hybrid Retrieval Engine]
-  ├── BM25 Okapi (Exact numerical lab matches)
-  └── Dense Semantic Search (HuggingFace all-MiniLM-L6-v2 + ChromaDB)
-       │
-       ▼
-[Reciprocal Rank Fusion (RRF)] ──► Top-K Candidate Chunks
+[Retrieved Evidence Chunks]
        │
        ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              SYSTEM 1 EVIDENCE DECISION GATE                    │
-│ "Based only on the supplied retrieved evidence, is there        │
+│               SYSTEM 1 DECISION GATE                            │
+│  "Based only on the supplied retrieved evidence, is there       │
 │  sufficient relevant information to answer the question?"       │
 └─────────────────────────────────────────────────────────────────┘
        │
@@ -45,12 +32,13 @@ User Health Question
        │       │                                     - Clear grounded refusal
        │       │                                     - Clinical review advisory
        │       │                                     - S2 generation skipped
-       │
+       │       │
        ├──► [Provider Error / Malformed Response]
        │       │
        │       └──► CONSERVATIVE SAFETY HALT
        │               - Prevents unverified generation
        │               - Actionable key/quota recovery advice
+       │               - S2 generation skipped
        │
        └──► [Probability >= 0.5: SUFFICIENT]
                │
@@ -95,6 +83,10 @@ HealthRAG implements a strict conservative policy:
    - Returns non-technical recovery instructions (checking keys, checking quota, or switching providers).
 4. **Missing Key Validation:**
    - When System 1 is enabled, a valid API key is mandatory. The pipeline immediately raises a configuration error rather than silently bypassing the decision gate.
+5. **Exhaustive Hemoglobin Scan Routing (`EXHAUSTIVE_HEMOGLOBIN_SCAN`):**
+   - For all-record hemoglobin aggregation queries across patient documents, full-corpus regex pattern matching extracts candidate matches across accessible chunks.
+   - **System 1 Enabled:** Candidate chunks are submitted to the System 1 decision gate before presenting findings. If evaluated as insufficient or on provider failure, the conservative safety policy safely abstains or halts. If sufficient, candidate matches are returned with the verified decision metadata.
+   - **System 1 Disabled:** Baseline deterministic regex candidates are returned directly without calling external models.
 
 ---
 
@@ -138,6 +130,13 @@ python -m eval.evaluate_system1 --live
 ```
 *(Requires `SYSTEM1_API_KEY` and `GROQ_API_KEY` or `OPENAI_API_KEY`).*
 
+### Proxy Metric Definitions & Disclaimers
+
+> [!IMPORTANT]
+> - **Proxy Keyword Correctness:** Evaluates whether predefined substring tokens appear in the generated output. It does **not** measure clinical accuracy, medical correctness, or diagnostic soundness.
+> - **Proxy Token Overlap Faithfulness:** Measures unigram lexical overlap between generated response tokens and the actual evidence context chunks retrieved and used (accounting for expanded retrieval when retried). It is a lexical proximity heuristic, **not** clinically validated faithfulness or evidence grounding.
+> - **No Medical Accuracy Claims:** Neither scenario simulations nor live proxy runs prove clinical efficacy, diagnostic safety, or complete elimination of hallucinations.
+
 ### Architectural Logic Verification Scenarios
 
 | Scenario Category | Test Focus | Baseline Behavior (Ungated) | Gated Behavior (System 1 + 2) |
@@ -148,9 +147,6 @@ python -m eval.evaluate_system1 --live
 | **Ambiguous Scope (Case 6)** | Normality check on lab values | Generates answer | Passes gate -> System 2 generates answer |
 | **Contradictory / Noise (Case 7)** | Differential diagnosis list | Guesses specific diagnosis | Insufficient evidence -> Safely abstains |
 | **Provider Failure (Case 8)** | HTTP 429 / Timeout | N/A | Conservative safety halt (no bypass) |
-
-> [!IMPORTANT]
-> The scenario simulation verifies pipeline behavior; it does not constitute clinical validation. Clinical efficacy, false-abstention rates, and answer grounding must be validated against clinician-annotated datasets with independent physician review.
 
 ---
 
@@ -181,21 +177,31 @@ venv\Scripts\activate    # Windows
 pip install -r requirements.txt
 ```
 
-### 2. Run Tests
+### 2. Environment Configuration
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
+```
+Add your optional server-side keys (`GROQ_API_KEY`, `SYSTEM1_API_KEY`). Users can also enter keys in the Streamlit UI.
+
+### 3. Running Backend & Frontend
+Terminal 1 (FastAPI backend):
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Terminal 2 (Streamlit UI):
+```bash
+streamlit run frontend/streamlit_app.py
+```
+
+### 4. Running Regression Tests
 ```bash
 python -m pytest
 ```
-Runs 57 unit and integration tests covering provider adapters, JevModel criteria schemas, Laya automatic routing, endpoint allowlisting, missing key validation, bounded retry, conservative fallbacks, and API endpoints.
-
-### 3. Launch Application
-```bash
-python run.py
-```
-Starts:
-- **FastAPI backend** on `http://127.0.0.1:8000`
-- **Streamlit frontend** on `http://localhost:8501`
 
 ---
 
-## 8. Disclaimer & Limitations
-*This system is an educational prototype and is not a certified medical device. It does not provide clinical diagnoses, medical advice, or treatment decisions. Always consult a qualified physician or healthcare professional.*
+## 8. Clinical & Regulatory Disclaimer
+
+HealthRAG is an experimental prototype for research and evaluation. It is **not** a certified medical device and is **not** intended for primary diagnosis, treatment planning, or acute clinical decision-making. Always consult a licensed physician or healthcare professional for clinical advice.

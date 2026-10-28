@@ -341,3 +341,186 @@ def test_offline_evaluation_suite():
     summary = eval_result["summary"]
     assert summary["mode"] == "deterministic_scenario_simulation"
     assert "simulated_scenarios" in summary
+    assert "proxy_metric_definitions" in summary
+    assert "proxy_metrics_summary" in summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ALL-HEMOGLOBIN EXHAUSTIVE SCAN REGRESSION TESTS (SYSTEM 1 ENABLED & DISABLED)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SAMPLE_HEMOGLOBIN_CHUNKS = [
+    {
+        "id": "c1",
+        "text": "HAEMATOLOGY REPORT\nPatient: John Doe | Hemoglobin: 14.2 g/dL | Normal: 13-17",
+        "metadata": {"document_id": "doc-1", "document_name": "patient_a.pdf", "patient_label": "Patient A", "page": 1},
+    },
+    {
+        "id": "c2",
+        "text": "CBC Report\nPatient: Jane Smith | Hb 11.5 g/dL | RBC 4.2",
+        "metadata": {"document_id": "doc-2", "document_name": "patient_b.pdf", "patient_label": "Patient B", "page": 2},
+    },
+    {
+        "id": "c3",
+        "text": "Platelet Count: 250,000 /mcL\nWBC: 6,800 /mcL",
+        "metadata": {"document_id": "doc-3", "document_name": "patient_c.pdf", "patient_label": "Patient C", "page": 1},
+    },
+]
+
+
+def test_all_hemoglobin_route_with_system1_disabled(monkeypatch):
+    """When System 1 is disabled, all-hemoglobin query runs deterministic full-corpus regex scan."""
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: SAMPLE_HEMOGLOBIN_CHUNKS)
+
+    result = answer_question(
+        question="List all hemoglobin levels across all patients",
+        provider="groq",
+        api_key="gsk-key",
+        system1_enabled=False,
+    )
+
+    assert result["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+    assert "Patient A" in result["answer"]
+    assert "Patient B" in result["answer"]
+    assert "14.2" in result["answer"]
+    assert "11.5" in result["answer"]
+    assert len(result["sources"]) == 2
+    assert "system1_decision" not in result.get("structured_data", {})
+    assert "system1_decision" not in result.get("metrics", {})
+    assert result.get("abstained_by_system1") is not True
+    assert result.get("system1_error") is not True
+
+
+def test_all_hemoglobin_route_with_system1_enabled_sufficient(monkeypatch):
+    """When System 1 is enabled and evaluates candidate evidence as sufficient, returns verified candidate scan."""
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: SAMPLE_HEMOGLOBIN_CHUNKS)
+    monkeypatch.setattr(
+        "app.rag.evaluate_evidence_sufficiency",
+        lambda question, chunks, **kwargs: DecisionResult(
+            is_sufficient=True,
+            probability=0.96,
+            threshold=0.5,
+            provider="codiv",
+            model="openjev-latest",
+            latency_sec=0.07,
+            status="SUFFICIENT",
+        ),
+    )
+
+    result = answer_question(
+        question="List all hemoglobin levels across all patients",
+        provider="groq",
+        api_key="gsk-key",
+        system1_enabled=True,
+        system1_provider="codiv",
+        system1_api_key="codiv-key-123",
+    )
+
+    assert result["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+    assert "Patient A" in result["answer"]
+    assert "Patient B" in result["answer"]
+    assert "14.2" in result["answer"]
+    assert result["metrics"]["system1_decision"]["status"] == "SUFFICIENT"
+    assert result["metrics"]["system1_decision"]["probability"] == 0.96
+    assert result["metrics"]["system1_evaluated"] is True
+    assert result["structured_data"]["system1_decision"]["status"] == "SUFFICIENT"
+    assert result.get("abstained_by_system1") is not True
+    assert result.get("system1_error") is not True
+
+
+def test_all_hemoglobin_route_with_system1_enabled_insufficient_abstains(monkeypatch):
+    """When System 1 evaluates candidate evidence as insufficient, safe abstention is triggered."""
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: SAMPLE_HEMOGLOBIN_CHUNKS)
+    monkeypatch.setattr(
+        "app.rag.evaluate_evidence_sufficiency",
+        lambda question, chunks, **kwargs: DecisionResult(
+            is_sufficient=False,
+            probability=0.15,
+            threshold=0.5,
+            provider="codiv",
+            model="openjev-latest",
+            latency_sec=0.05,
+            status="INSUFFICIENT",
+        ),
+    )
+
+    result = answer_question(
+        question="List all hemoglobin levels across all patients",
+        provider="groq",
+        api_key="gsk-key",
+        system1_enabled=True,
+        system1_provider="codiv",
+        system1_api_key="codiv-key-123",
+    )
+
+    assert result["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+    assert result.get("abstained_by_system1") is True
+    assert "insufficient evidence" in result["answer"].lower()
+    assert "healthcare professional" in result["answer"].lower()
+    assert result["metrics"]["system1_decision"]["status"] == "INSUFFICIENT"
+    assert result["structured_data"]["system1_decision"]["status"] == "INSUFFICIENT"
+    assert result["structured_data"]["confidence"] == "low"
+
+
+def test_all_hemoglobin_route_with_system1_enabled_error_halts(monkeypatch):
+    """When System 1 encounters an error during all-hemoglobin scan, conservative safety halts."""
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: SAMPLE_HEMOGLOBIN_CHUNKS)
+    monkeypatch.setattr(
+        "app.rag.evaluate_evidence_sufficiency",
+        lambda question, chunks, **kwargs: DecisionResult(
+            is_sufficient=False,
+            probability=0.0,
+            threshold=0.5,
+            provider="codiv",
+            model="openjev-latest",
+            latency_sec=0.02,
+            status="ERROR",
+            error_message="HTTP 503 Service Unavailable",
+        ),
+    )
+
+    result = answer_question(
+        question="List all hemoglobin levels across all patients",
+        provider="groq",
+        api_key="gsk-key",
+        system1_enabled=True,
+        system1_provider="codiv",
+        system1_api_key="codiv-key-123",
+    )
+
+    assert result["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+    assert result.get("system1_error") is True
+    assert "unable to verify the evidence" in result["answer"].lower()
+    assert "503" in result["answer"]
+    assert result["metrics"]["system1_decision"]["status"] == "ERROR"
+    assert result["structured_data"]["system1_decision"]["status"] == "ERROR"
+
+
+def test_all_hemoglobin_route_with_system1_enabled_missing_key_raises():
+    """When all-hemoglobin scan is queried with System 1 enabled but key missing, fail-fast validation raises ValueError."""
+    with pytest.raises(ValueError, match="System 1 evidence decision gate is enabled, but no API key was provided"):
+        answer_question(
+            question="List all hemoglobin levels across all patients",
+            provider="groq",
+            api_key="gsk-key",
+            system1_enabled=True,
+            system1_provider="codiv",
+            system1_api_key="",
+        )
+
+
+def test_all_hemoglobin_route_empty_corpus(monkeypatch):
+    """When all-hemoglobin scan finds no indexed chunks in scope, returns clear notice."""
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [])
+
+    result = answer_question(
+        question="List all hemoglobin levels across all patients",
+        provider="groq",
+        api_key="gsk-key",
+        system1_enabled=True,
+        system1_api_key="codiv-key-123",
+    )
+
+    assert result["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+    assert "No indexed chunks were found" in result["answer"]
+    assert result["metrics"]["retrieved_chunks"] == 0

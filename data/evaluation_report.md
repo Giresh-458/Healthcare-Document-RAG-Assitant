@@ -2,11 +2,19 @@
 
 **Evaluation Mode:** deterministic_scenario_simulation  
 **Status:** Deterministic scenario simulation for logic verification  
-**Disclaimer:** Notice: Deterministic scenario simulation for architectural verification; not an empirical live benchmark measurement.
+**Disclaimer:** Notice: Deterministic scenario simulation for routing logic verification; NOT an empirical benchmark measurement.
+
+## Proxy Metric Definitions & Limitations
+
+> [!IMPORTANT]
+> The metrics reported below are **proxy indicators** used solely for pipeline flow and routing verification:
+> - **Proxy Keyword Correctness:** Evaluates whether predefined substring tokens appear in the generated output. It does **not** measure clinical accuracy, medical correctness, or diagnostic soundness.
+> - **Proxy Token Overlap Faithfulness:** Measures unigram lexical overlap between generated response tokens and the actual evidence context chunks used (accounting for expanded retrieval when retried). It is a lexical proximity heuristic, **not** clinically validated faithfulness or evidence grounding.
+> - **No Medical Accuracy Claims:** Neither scenario simulations nor live proxy runs prove clinical efficacy, diagnostic safety, or complete elimination of hallucinations.
 
 ## Methodology & Architectural Hypotheses
 
-HealthRAG integrates a fast System 1 non-autoregressive decision model as a gate prior to invoking the System 2 LLM.
+HealthRAG integrates a fast System 1 non-autoregressive decision model as an evidence sufficiency gate prior to invoking the System 2 LLM.
 
 ### Hypotheses Evaluated:
 1. **Evidence-Sufficiency Gate:** Can a fast decision model evaluate retrieved passages and flag when critical information is missing?

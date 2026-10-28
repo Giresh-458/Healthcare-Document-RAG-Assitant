@@ -12,6 +12,13 @@ Supports two evaluation modes:
    retrieval retry, and safe abstention routing without external API costs or network flakiness.
    Clearly labeled as a deterministic simulation — not empirical benchmark results.
 
+Evaluation Metrics Note (Proxy Metrics):
+   - Correctness checks use heuristic substring keyword matching.
+   - Faithfulness scores use unigram token overlap with the actual retrieved evidence context
+     chunks used (incorporating expanded chunks when retrieval retry occurs).
+   - These are proxy metrics for pipeline routing verification. They do NOT evaluate clinical
+     accuracy, medical validity, or validated clinical faithfulness.
+
 Usage:
   python -m eval.evaluate_system1            # Offline deterministic simulation
   python -m eval.evaluate_system1 --live     # Live API evaluation (requires API keys)
@@ -156,10 +163,14 @@ BENCHMARK_CASES = [
 
 
 def _calculate_token_overlap(answer: str, chunks: List[Dict[str, Any]]) -> float:
-    """Calculate token overlap between generated answer and context chunks."""
+    """Calculate lexical unigram token overlap between generated answer and context chunks (Proxy Metric).
+
+    This calculates lexical token intersection. It is a proximity heuristic only,
+    NOT clinically validated faithfulness, factual grounding, or medical correctness.
+    """
     if not answer or not chunks:
         return 0.0
-    context_tokens = set(re.findall(r"[a-z0-9]+", " ".join(c["text"] for c in chunks).lower()))
+    context_tokens = set(re.findall(r"[a-z0-9]+", " ".join(c.get("text", "") for c in chunks).lower()))
     answer_tokens = re.findall(r"[a-z0-9]+", answer.lower())
     if not answer_tokens:
         return 1.0
@@ -175,8 +186,8 @@ class TestCaseResult:
     expected_answerable: bool
     baseline_answer: str
     baseline_latency: float
-    baseline_faithfulness: float
-    baseline_correct: bool
+    baseline_proxy_faithfulness: float  # Lexical token overlap with actual evidence (Proxy Metric)
+    baseline_proxy_correctness: bool   # Substring keyword match (Proxy Metric)
     baseline_unsupported: bool
     baseline_abstained: bool
     proposed_answer: str
@@ -184,10 +195,27 @@ class TestCaseResult:
     proposed_system1_prob: float
     proposed_system1_status: str
     proposed_retry_performed: bool
-    proposed_faithfulness: float
-    proposed_correct: bool
+    proposed_proxy_faithfulness: float  # Lexical token overlap with actual evidence (Proxy Metric)
+    proposed_proxy_correctness: bool   # Substring keyword match (Proxy Metric)
     proposed_unsupported: bool
     proposed_abstained: bool
+
+    # Backward-compatible property aliases for existing consumers
+    @property
+    def baseline_correct(self) -> bool:
+        return self.baseline_proxy_correctness
+
+    @property
+    def baseline_faithfulness(self) -> float:
+        return self.baseline_proxy_faithfulness
+
+    @property
+    def proposed_correct(self) -> bool:
+        return self.proposed_proxy_correctness
+
+    @property
+    def proposed_faithfulness(self) -> float:
+        return self.proposed_proxy_faithfulness
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,6 +243,7 @@ def run_live_evaluation(
         q = case["question"]
         expected_ans = case["expected_answerable"]
         initial_chunks = [chunk_map[ch_id] for ch_id in case["retrieved_chunk_ids"]]
+        expanded_chunks = [chunk_map[ch_id] for ch_id in case["expanded_chunk_ids"]]
 
         # 1. Real Baseline Call (System 2 only)
         t0 = time.time()
@@ -227,7 +256,11 @@ def run_live_evaluation(
         )
         b_lat = round(time.time() - t0, 3)
         b_ans = b_res.get("answer", "")
-        b_faith = _calculate_token_overlap(b_ans, initial_chunks)
+        # Measure token overlap against the actual retrieved context chunks used by the RAG pipeline
+        b_faith = b_res.get("metrics", {}).get(
+            "answer_context_token_overlap_heuristic",
+            _calculate_token_overlap(b_ans, initial_chunks)
+        )
         b_abstained = "insufficient" in b_ans.lower() or "not find any relevant" in b_ans.lower()
         if expected_ans:
             b_correct = all(kw in b_ans.lower() for kw in case["ground_truth_contains"]) and not b_abstained
@@ -254,7 +287,16 @@ def run_live_evaluation(
         p_status = s1_meta.get("status", "UNKNOWN")
         p_retry = s1_meta.get("retry_performed", False)
         p_abstained = p_res.get("abstained_by_system1", False) or "insufficient" in p_ans.lower()
-        p_faith = _calculate_token_overlap(p_ans, initial_chunks)
+
+        # Ensure correct evidence context is used for evaluation:
+        # If retrieval was expanded during retry, evaluation must use the expanded evidence set.
+        # The RAG pipeline computes 'answer_context_token_overlap_heuristic' directly on the
+        # active relevant chunks (whether initial or expanded).
+        actual_proposed_chunks = expanded_chunks if p_retry else initial_chunks
+        p_faith = p_res.get("metrics", {}).get(
+            "answer_context_token_overlap_heuristic",
+            _calculate_token_overlap(p_ans, actual_proposed_chunks)
+        )
         if expected_ans:
             p_correct = all(kw in p_ans.lower() for kw in case["ground_truth_contains"]) and not p_abstained
             p_unsupported = False
@@ -269,8 +311,8 @@ def run_live_evaluation(
             expected_answerable=expected_ans,
             baseline_answer=b_ans,
             baseline_latency=b_lat,
-            baseline_faithfulness=b_faith,
-            baseline_correct=b_correct,
+            baseline_proxy_faithfulness=b_faith,
+            baseline_proxy_correctness=b_correct,
             baseline_unsupported=b_unsupported,
             baseline_abstained=b_abstained,
             proposed_answer=p_ans,
@@ -278,8 +320,8 @@ def run_live_evaluation(
             proposed_system1_prob=p_prob,
             proposed_system1_status=p_status,
             proposed_retry_performed=p_retry,
-            proposed_faithfulness=p_faith,
-            proposed_correct=p_correct,
+            proposed_proxy_faithfulness=p_faith,
+            proposed_proxy_correctness=p_correct,
             proposed_unsupported=p_unsupported,
             proposed_abstained=p_abstained,
         ))
@@ -323,6 +365,7 @@ def run_simulation() -> Dict[str, Any]:
             b_ans = "The report notes decreased hemoglobin in thalassemia and increased in polycythemia, suggesting mild thalassemia trait."
 
         b_lat = 0.465
+        # Ensure correct evidence context is used: baseline retrieves initial_chunks
         b_faith = _calculate_token_overlap(b_ans, initial_chunks)
         b_abstained = "insufficient" in b_ans.lower()
         if expected_ans:
@@ -360,7 +403,9 @@ def run_simulation() -> Dict[str, Any]:
             p_abstained = False
             p_correct = all(kw in p_ans.lower() for kw in case["ground_truth_contains"])
             p_unsupported = False
-            p_faith = _calculate_token_overlap(p_ans, initial_chunks)
+            # Ensure correct evidence context is used: if retry occurred, use expanded_chunks
+            actual_p_chunks = expanded_chunks if p_retry else initial_chunks
+            p_faith = _calculate_token_overlap(p_ans, actual_p_chunks)
             p_prob = sim_prob
 
         results.append(TestCaseResult(
@@ -370,8 +415,8 @@ def run_simulation() -> Dict[str, Any]:
             expected_answerable=expected_ans,
             baseline_answer=b_ans,
             baseline_latency=b_lat,
-            baseline_faithfulness=b_faith,
-            baseline_correct=b_correct,
+            baseline_proxy_faithfulness=b_faith,
+            baseline_proxy_correctness=b_correct,
             baseline_unsupported=b_unsupported,
             baseline_abstained=b_abstained,
             proposed_answer=p_ans,
@@ -379,8 +424,8 @@ def run_simulation() -> Dict[str, Any]:
             proposed_system1_prob=p_prob,
             proposed_system1_status=p_status,
             proposed_retry_performed=p_retry,
-            proposed_faithfulness=p_faith,
-            proposed_correct=p_correct,
+            proposed_proxy_faithfulness=p_faith,
+            proposed_proxy_correctness=p_correct,
             proposed_unsupported=p_unsupported,
             proposed_abstained=p_abstained,
         ))
@@ -393,8 +438,8 @@ def _aggregate_results(results: List[TestCaseResult], mode: str) -> Dict[str, An
     unans = [r for r in results if not r.expected_answerable]
     ans = [r for r in results if r.expected_answerable]
 
-    b_corr = sum(1 for r in results if r.baseline_correct)
-    p_corr = sum(1 for r in results if r.proposed_correct)
+    b_corr = sum(1 for r in results if r.baseline_proxy_correctness)
+    p_corr = sum(1 for r in results if r.proposed_proxy_correctness)
     b_unsupp = sum(1 for r in unans if r.baseline_unsupported)
     p_unsupp = sum(1 for r in unans if r.proposed_unsupported)
     b_abst = sum(1 for r in unans if r.baseline_abstained)
@@ -402,20 +447,45 @@ def _aggregate_results(results: List[TestCaseResult], mode: str) -> Dict[str, An
     b_false_abst = sum(1 for r in ans if r.baseline_abstained)
     p_false_abst = sum(1 for r in ans if r.proposed_abstained)
     retry_cnt = sum(1 for r in results if r.proposed_retry_performed)
+    b_mean_faith = round(sum(r.baseline_proxy_faithfulness for r in results) / total, 4) if total else 0.0
+    p_mean_faith = round(sum(r.proposed_proxy_faithfulness for r in results) / total, 4) if total else 0.0
 
     summary = {
         "mode": mode,
         "is_empirical_benchmark": (mode == "live_api_evaluation"),
         "disclaimer": (
-            "Empirical results obtained via live API execution."
+            "Empirical results obtained via live API execution using heuristic proxy metrics. "
+            "Keyword presence and unigram token overlap are heuristic proxies and DO NOT constitute "
+            "clinical accuracy, medical validity, or validated faithfulness."
             if mode == "live_api_evaluation"
-            else "Notice: Deterministic scenario simulation for architectural verification; not an empirical live benchmark measurement."
+            else "Notice: Deterministic scenario simulation for routing logic verification; NOT an empirical benchmark measurement."
         ),
+        "proxy_metric_definitions": {
+            "proxy_keyword_correctness": (
+                "Evaluates presence of expected key tokens in the answer string. "
+                "Proxy heuristic only; does NOT assess medical or clinical accuracy."
+            ),
+            "proxy_token_overlap_faithfulness": (
+                "Evaluates unigram lexical overlap between generated response and the actual retrieved "
+                "evidence context chunks used (including expanded chunks if retry occurred). "
+                "Proximity heuristic only; does NOT assess factual truthfulness or clinical grounding."
+            ),
+        },
         "total_test_cases": total,
         "answerable_count": len(ans),
         "unanswerable_count": len(unans),
+        "proxy_metrics_summary": {
+            "proxy_keyword_correctness": {"baseline": f"{b_corr}/{total}", "proposed": f"{p_corr}/{total}"},
+            "unsupported_answer_rate": {"baseline": f"{b_unsupp}/{len(unans)}", "proposed": f"{p_unsupp}/{len(unans)}"},
+            "appropriate_abstention_rate": {"baseline": f"{b_abst}/{len(unans)}", "proposed": f"{p_abst}/{len(unans)}"},
+            "false_abstention_rate": {"baseline": f"{b_false_abst}/{len(ans)}", "proposed": f"{p_false_abst}/{len(ans)}"},
+            "retrieval_retry_rate": {"proposed": f"{retry_cnt}/{total}"},
+            "mean_proxy_faithfulness": {"baseline": b_mean_faith, "proposed": p_mean_faith},
+        },
+        # For backward compatibility with existing test scripts:
         "simulated_scenarios": {
             "answer_correctness": {"baseline": f"{b_corr}/{total}", "proposed": f"{p_corr}/{total}"},
+            "proxy_keyword_correctness": {"baseline": f"{b_corr}/{total}", "proposed": f"{p_corr}/{total}"},
             "unsupported_answer_rate": {"baseline": f"{b_unsupp}/{len(unans)}", "proposed": f"{p_unsupp}/{len(unans)}"},
             "appropriate_abstention_rate": {"baseline": f"{b_abst}/{len(unans)}", "proposed": f"{p_abst}/{len(unans)}"},
             "false_abstention_rate": {"baseline": f"{b_false_abst}/{len(ans)}", "proposed": f"{p_false_abst}/{len(ans)}"},
@@ -454,16 +524,18 @@ def main():
     print("\n" + "=" * 80)
     if summary["is_empirical_benchmark"]:
         print(" HEALTHRAG LIVE API EVALUATION (REAL MODELS & RETRIEVAL)")
+        print(" Notice: Correctness and Faithfulness are evaluated using heuristic proxy metrics.")
+        print("         Do not interpret these results as validated clinical accuracy.")
     else:
         print(" HEALTHRAG DETERMINISTIC SCENARIO SIMULATION")
         print(" Notice: Architectural simulation for routing logic; NOT empirical measurements.")
     print("=" * 80)
     print(f"Mode: {summary['mode']} | Test Cases: {summary['total_test_cases']}\n")
 
-    scenarios = summary["simulated_scenarios"]
-    for k, v in scenarios.items():
+    metrics_dict = summary.get("proxy_metrics_summary", summary.get("simulated_scenarios", {}))
+    for k, v in metrics_dict.items():
         label = k.replace("_", " ").title()
-        print(f"  {label:<30}: Baseline={v.get('baseline', 'N/A')} | Proposed={v.get('proposed', 'N/A')}")
+        print(f"  {label:<32}: Baseline={v.get('baseline', 'N/A')} | Proposed={v.get('proposed', 'N/A')}")
 
     os.makedirs("data", exist_ok=True)
     with open("data/evaluation_results.json", "w", encoding="utf-8") as f:
@@ -472,12 +544,20 @@ def main():
     report_md = f"""# HealthRAG System 1 Decision Gate: Evaluation & Simulation Documentation
 
 **Evaluation Mode:** {summary['mode']}  
-**Status:** {'Empirical live API run' if summary['is_empirical_benchmark'] else 'Deterministic scenario simulation for logic verification'}  
+**Status:** {'Empirical live API run (Proxy Metrics)' if summary['is_empirical_benchmark'] else 'Deterministic scenario simulation for logic verification'}  
 **Disclaimer:** {summary['disclaimer']}
+
+## Proxy Metric Definitions & Limitations
+
+> [!IMPORTANT]
+> The metrics reported below are **proxy indicators** used solely for pipeline flow and routing verification:
+> - **Proxy Keyword Correctness:** Evaluates whether predefined substring tokens appear in the generated output. It does **not** measure clinical accuracy, medical correctness, or diagnostic soundness.
+> - **Proxy Token Overlap Faithfulness:** Measures unigram lexical overlap between generated response tokens and the actual evidence context chunks used (accounting for expanded retrieval when retried). It is a lexical proximity heuristic, **not** clinically validated faithfulness or evidence grounding.
+> - **No Medical Accuracy Claims:** Neither scenario simulations nor live proxy runs prove clinical efficacy, diagnostic safety, or complete elimination of hallucinations.
 
 ## Methodology & Architectural Hypotheses
 
-HealthRAG integrates a fast System 1 non-autoregressive decision model as a gate prior to invoking the System 2 LLM.
+HealthRAG integrates a fast System 1 non-autoregressive decision model as an evidence sufficiency gate prior to invoking the System 2 LLM.
 
 ### Hypotheses Evaluated:
 1. **Evidence-Sufficiency Gate:** Can a fast decision model evaluate retrieved passages and flag when critical information is missing?

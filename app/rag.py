@@ -38,18 +38,41 @@ def _source(chunk):
     }
 
 
-def _all_hemoglobin_candidates(question: str, chunks: List[Dict], start_time: float):
-    """Deterministic, transparent candidate scan; values still require source verification."""
+def _all_hemoglobin_candidates(
+    question: str,
+    chunks: List[Dict],
+    start_time: float,
+    system1_enabled: bool = False,
+    system1_provider: str = "codiv",
+    system1_api_key: Optional[str] = None,
+    system1_threshold: float = DEFAULT_SUFFICIENCY_THRESHOLD,
+    system1_endpoint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Deterministic candidate scan across all indexed chunks in scope.
+
+    Values require source verification.
+    When System 1 is enabled:
+        Evaluates System 1 evidence sufficiency over the candidate chunks before
+        presenting findings. If insufficient or if a provider error occurs, the
+        conservative safety policy halts or abstains.
+    When System 1 is disabled:
+        Returns deterministic regex matches directly without invoking System 1 or System 2.
+    """
     value_patterns = [
         re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b\s*(?:[:=]\s*)?(\d{1,3}(?:\.\d+)?)(?!\s*[-–]\s*\d)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
         re.compile(r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b\s*\([^\)\n]{1,20}\)\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)(?!\s*[-–]\s*\d)\s*(g\s*/\s*d?l|g\s*/\s*l)?\b", re.I),
         re.compile(r"\b(\d{1,3}(?:\.\d+)?)\s*(g\s*/\s*d?l|g\s*/\s*l)\s*(?:of\s+)?(?:hemoglobin|haemoglobin|hgb|hb)\b", re.I),
     ]
     rows, seen = [], set()
+    matching_chunks = []
+    seen_matching_chunk_keys = set()
+
     for chunk in chunks:
         metadata = chunk["metadata"]
+        matched_chunk = False
         for pattern_index, pattern in enumerate(value_patterns):
-            for match in pattern.finditer(chunk["text"]):
+            for match in pattern.finditer(chunk.get("text", "")):
+                matched_chunk = True
                 if pattern_index == 0:
                     value = match.group(1)
                     unit = (match.group(2) or "unit not stated").replace(" ", "")
@@ -69,6 +92,102 @@ def _all_hemoglobin_candidates(question: str, chunks: List[Dict], start_time: fl
                     "page": metadata.get("page", "?"),
                     "evidence": match.group(0).strip(),
                 })
+        if matched_chunk:
+            chunk_key = (metadata.get("document_id"), metadata.get("page"))
+            if chunk_key not in seen_matching_chunk_keys:
+                seen_matching_chunk_keys.add(chunk_key)
+                matching_chunks.append(chunk)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SYSTEM 1 EVALUATION (When enabled on exhaustive candidate scan)
+    # ─────────────────────────────────────────────────────────────────────────
+    system1_decision_dict: Optional[Dict[str, Any]] = None
+    if system1_enabled:
+        eval_chunks = matching_chunks[:TOP_K * 2] if matching_chunks else chunks[:TOP_K]
+        decision = evaluate_evidence_sufficiency(
+            question=question,
+            chunks=eval_chunks,
+            provider=system1_provider,
+            api_key=(system1_api_key or "").strip(),
+            threshold=system1_threshold,
+            endpoint=system1_endpoint,
+        )
+
+        if decision.status == "INSUFFICIENT":
+            sources, seen_src = [], set()
+            for chunk in eval_chunks:
+                source = _source(chunk)
+                key = (source["document_id"], source["document"], source["page"])
+                if key not in seen_src:
+                    seen_src.add(key)
+                    sources.append(source)
+
+            abstention_answer = (
+                "Based on the available healthcare documents in your selected scope, "
+                "there is insufficient evidence to answer your question accurately.\n\n"
+                "Clinical Recommendation: Please consult a qualified healthcare professional "
+                "or physician for medical advice, diagnosis, or interpretation of health records. "
+                "You may also verify whether the uploaded document contains the specific lab test or report section."
+            )
+            total_latency = round(time.time() - start_time, 2)
+            metrics = RagMetrics.log_metrics(question, abstention_answer, eval_chunks, total_latency)
+            metrics["system1_decision"] = decision.to_dict()
+            metrics["aggregation_method"] = "full-corpus regex candidate scan with System 1 sufficiency verification"
+            metrics["system1_evaluated"] = True
+            return {
+                "answer": abstention_answer,
+                "sources": sources,
+                "metrics": metrics,
+                "route": "EXHAUSTIVE_HEMOGLOBIN_SCAN",
+                "structured_data": {
+                    "confidence": "low",
+                    "medical_entities": ["hemoglobin"],
+                    "requires_doctor_review": True,
+                    "system1_decision": decision.to_dict(),
+                },
+                "abstained_by_system1": True,
+            }
+
+        if decision.status == "ERROR":
+            sources, seen_src = [], set()
+            for chunk in eval_chunks:
+                source = _source(chunk)
+                key = (source["document_id"], source["document"], source["page"])
+                if key not in seen_src:
+                    seen_src.add(key)
+                    sources.append(source)
+
+            error_notice = (
+                f"The System 1 evidence-sufficiency gate was unable to verify the evidence "
+                f"due to a provider issue ({decision.error_message}). "
+                "Under HealthRAG's conservative safety policy, unverified answer generation was prevented.\n\n"
+                "Recovery Guidance:\n"
+                "- Verify your System 1 API key in the sidebar configuration.\n"
+                "- Check the provider status and your remaining free quota.\n"
+                "- Alternatively, uncheck the System 1 gate to test the baseline System 2 LLM directly.\n\n"
+                "Clinical Recommendation: Always consult a licensed healthcare provider for clinical interpretation."
+            )
+            total_latency = round(time.time() - start_time, 2)
+            metrics = RagMetrics.log_metrics(question, error_notice, eval_chunks, total_latency)
+            metrics["system1_decision"] = decision.to_dict()
+            metrics["aggregation_method"] = "full-corpus regex candidate scan with System 1 sufficiency verification"
+            metrics["system1_evaluated"] = True
+            return {
+                "answer": error_notice,
+                "sources": sources,
+                "metrics": metrics,
+                "route": "EXHAUSTIVE_HEMOGLOBIN_SCAN",
+                "structured_data": {
+                    "confidence": "low",
+                    "medical_entities": ["hemoglobin"],
+                    "requires_doctor_review": True,
+                    "system1_decision": decision.to_dict(),
+                },
+                "system1_error": True,
+            }
+
+        system1_decision_dict = decision.to_dict()
+
     rows.sort(key=lambda row: (str(row["patient_label"]).casefold(), str(row["document"]).casefold(), str(row["page"])))
     if rows:
         lines = [
@@ -95,17 +214,27 @@ def _all_hemoglobin_candidates(question: str, chunks: List[Dict], start_time: fl
         if key not in seen_sources:
             seen_sources.add(key)
             sources.append({"document": row["document"], "document_id": row["document_id"], "patient_label": row["patient_label"], "page": row["page"]})
+
+    structured_data: Dict[str, Any] = {"confidence": "low", "medical_entities": ["hemoglobin"], "requires_doctor_review": True}
+    if system1_decision_dict:
+        structured_data["system1_decision"] = system1_decision_dict
+
+    metrics: Dict[str, Any] = {
+        "latency_sec": round(time.time() - start_time, 2),
+        "retrieved_chunks": len(chunks),
+        "documents_scanned": len({c["metadata"].get("document_id") or c["metadata"].get("document_name") for c in chunks}),
+        "aggregation_method": "full-corpus regex candidate scan with System 1 sufficiency verification" if system1_enabled else "full-corpus regex candidate scan",
+    }
+    if system1_decision_dict:
+        metrics["system1_decision"] = system1_decision_dict
+        metrics["system1_evaluated"] = True
+
     return {
         "answer": answer,
         "sources": sources,
-        "metrics": {
-            "latency_sec": round(time.time() - start_time, 2),
-            "retrieved_chunks": len(chunks),
-            "documents_scanned": len({c["metadata"].get("document_id") or c["metadata"].get("document_name") for c in chunks}),
-            "aggregation_method": "full-corpus regex candidate scan",
-        },
+        "metrics": metrics,
         "route": "EXHAUSTIVE_HEMOGLOBIN_SCAN",
-        "structured_data": {"confidence": "low", "medical_entities": ["hemoglobin"], "requires_doctor_review": True},
+        "structured_data": structured_data,
     }
 
 
@@ -149,13 +278,24 @@ def answer_question(
             document_ids=document_ids, patient_label=patient_label,
         )
         if not chunks:
+            structured_data: Dict[str, Any] = {"confidence": "low", "medical_entities": ["hemoglobin"], "requires_doctor_review": True}
             return {
                 "answer": "No indexed chunks were found in the selected scope.",
-                "sources": [], "metrics": {"retrieved_chunks": 0},
+                "sources": [],
+                "metrics": {"retrieved_chunks": 0},
                 "route": "EXHAUSTIVE_HEMOGLOBIN_SCAN",
-                "structured_data": {"confidence": "low", "medical_entities": ["hemoglobin"], "requires_doctor_review": True},
+                "structured_data": structured_data,
             }
-        return _all_hemoglobin_candidates(question, chunks, start_time)
+        return _all_hemoglobin_candidates(
+            question=question,
+            chunks=chunks,
+            start_time=start_time,
+            system1_enabled=system1_enabled,
+            system1_provider=system1_provider,
+            system1_api_key=system1_api_key,
+            system1_threshold=system1_threshold,
+            system1_endpoint=system1_endpoint,
+        )
 
     chat = get_llm(provider, api_key)
     route = QueryRouter.classify(question, chat)
