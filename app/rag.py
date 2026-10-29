@@ -354,6 +354,16 @@ def answer_question(
     """
     start_time = time.time()
 
+    # A missing scope is not equivalent to an explicit request to search all indexed documents.
+    if document_ids is None and document_names is None:
+        return {
+            "answer": "No documents are selected. Please select at least one PDF in Chat Context before asking a question.",
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "NO_SELECTION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": False},
+        }
+
     # Phase 2 Case A: Fail closed when active Chat Context has no selected documents
     if document_ids is not None and len(document_ids) == 0:
         return {
