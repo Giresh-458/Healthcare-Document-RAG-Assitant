@@ -251,6 +251,7 @@ def run_live_evaluation(
             question=q,
             provider=llm_provider,
             api_key=llm_key,
+            document_names=["hemoglobin-report.pdf"],
             session_id=eval_session,
             system1_enabled=False,
         )
@@ -275,6 +276,7 @@ def run_live_evaluation(
             question=q,
             provider=llm_provider,
             api_key=llm_key,
+            document_names=["hemoglobin-report.pdf"],
             session_id=eval_session,
             system1_enabled=True,
             system1_provider=system1_provider,
