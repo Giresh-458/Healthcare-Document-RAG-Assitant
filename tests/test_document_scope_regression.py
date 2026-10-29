@@ -970,3 +970,43 @@ def test_33_search_documents_session_scoping(monkeypatch):
     mock_col.query.assert_called_once()
     assert mock_col.query.call_args[1]["where"] == {"session_id": "session-xyz"}
 
+
+def test_34_exact_user_scenario_what_is_hemoglobin_level_with_3_unlabelled_docs(monkeypatch):
+    """34. Exactly reproduces the user's query: 'what is hemoglobin level' across 3 documents.
+    Must return clarification and MUST NOT dump all patient values."""
+    chunk_a = _make_chunk("doc-1", "01_patient_a_routine_labs.pdf", 1, "Patient A: 13.4 g/dL (Reference interval 12.0-16.0 g/dL)", patient_label="unspecified")
+    chunk_b = _make_chunk("doc-2", "02_patient_b_low_hemoglobin.pdf", 1, "Patient B: 10.8 g/dL (Reference interval 12.0-16.0 g/dL)", patient_label="unspecified")
+    chunk_e = _make_chunk("doc-6", "06_missing_hemoglobin_evidence.pdf", 1, "Patient E routine exam. No hemoglobin measured.", patient_label="unspecified")
+
+    mock_chat = MagicMock()
+    # If the system calls LLM, that's already a bug, but mock return value just in case
+    mock_chat.with_structured_output.return_value.invoke.return_value = MedicalAnswer(
+        answer="SHOULD_NEVER_REACH_LLM",
+        confidence="high",
+        medical_entities=[],
+        requires_doctor_review=True,
+    )
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [chunk_a, chunk_b, chunk_e])
+
+    result = answer_question(
+        question="what is hemoglobin level",
+        provider="groq",
+        api_key="gsk-key",
+        document_names=["01_patient_a_routine_labs.pdf", "02_patient_b_low_hemoglobin.pdf", "06_missing_hemoglobin_evidence.pdf"],
+    )
+
+    # Must ask for clarification
+    assert result.get("clarification_required") is True
+    assert result["route"] == "CLARIFICATION"
+    assert "Which patient's or report's hemoglobin level would you like to know?" in result["answer"]
+    # Must NOT list Patient A, Patient B, or 13.4, or 10.8 in the answer
+    assert "Patient A" not in result["answer"]
+    assert "Patient B" not in result["answer"]
+    assert "13.4" not in result["answer"]
+    assert "10.8" not in result["answer"]
+    assert "SHOULD_NEVER_REACH_LLM" not in result["answer"]
+    assert result["sources"] == []
+
+

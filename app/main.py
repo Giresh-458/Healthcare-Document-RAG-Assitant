@@ -235,22 +235,42 @@ def ask_question_endpoint(req: AskRequest):
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
         }
 
-    asks_multi_record = bool(re.search(r"\b(all|every|across|each)\b", question, re.IGNORECASE))
-    selected_records = [record for record in records if req.document_ids and record["document_id"] in req.document_ids]
-    selected_labels = {record["patient_label"] for record in selected_records if record["patient_label"] != "unspecified"}
+    asks_multi_record = bool(re.search(r"\b(all|every|across|each|both|summarize\s+all|summarize\s+across)\b", question, re.IGNORECASE))
+    selected_docs = req.document_ids if req.document_ids is not None else (req.document_names or [])
+    selected_doc_count = len(selected_docs)
+
+    selected_records = [
+        record for record in records
+        if (req.document_ids and record.get("document_id") in req.document_ids)
+        or (req.document_names and record.get("document_name") in req.document_names)
+    ]
+    selected_labels = {
+        record.get("patient_label") for record in selected_records
+        if record.get("patient_label") and record.get("patient_label") != "unspecified"
+    }
+
+    patient_in_q = bool(re.search(r"\b(Patient\s+[A-Za-z0-9_-]+|(?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+)\b", question, re.I))
+    report_in_q = bool(re.search(r"\b(?:report|accession|reg(?:istration)?\.?)\b\s*(?:id|no|number|#)?\s*[:#-]?\s*[A-Za-z0-9_-]+", question, re.I))
+    test_match = re.search(r"\b(hemoglobin|haemoglobin|hgb|hb|platelets?|glucose|cholesterol|potassium|sodium|wbc|rbc|creatinine|calcium|bilirubin|hba1c)\b", question, re.IGNORECASE)
+
     ambiguous_patient_scope = (
         not patient_label
+        and not patient_in_q
+        and not report_in_q
         and not asks_multi_record
-        and (len(available_labels) > 1 and not req.document_ids and not req.document_names
-             or len(selected_labels) > 1)
+        and (
+            len(selected_labels) > 1
+            or len(selected_records) > 1
+            or selected_doc_count > 1
+            or (len(available_labels) > 1 and not req.document_ids and not req.document_names)
+        )
     )
     if ambiguous_patient_scope:
-        test_match = re.search(r"\b(hemoglobin|haemoglobin|hgb|hb|platelet|glucose|cholesterol|potassium|sodium|wbc|rbc)\b", question, re.IGNORECASE)
         test_name = "hemoglobin" if (test_match and test_match.group(1).lower() in ["hb", "hgb", "haemoglobin"]) else (test_match.group(1).lower() if test_match else None)
         clarification_msg = (
             f"Which patient's or report's {test_name} level would you like to know?"
             if test_name
-            else "These records are labelled for multiple patients. Which patient's records should I use? Select a patient label or restrict the query to one upload record. I will not combine patient records for a single-patient question."
+            else "These records are labelled for multiple patients or reports. Which patient's or report's records should I use? Select a patient label or restrict the query to one upload record. I will not combine patient records for a single-patient question."
         )
         return {
             "answer": clarification_msg,
@@ -259,7 +279,7 @@ def ask_question_endpoint(req: AskRequest):
             "sources": [],
             "metrics": {"retrieved_chunks": 0},
             "route": "CLARIFICATION",
-            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+            "structured_data": {"confidence": "low", "medical_entities": [test_name] if test_name else [], "requires_doctor_review": True},
         }
     try:
         return answer_question(
