@@ -29,6 +29,7 @@ def test_baseline_rag_without_system1(monkeypatch):
 
     result = answer_question(
         question="What is the hemoglobin level?",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-test-key",
         system1_enabled=False,
@@ -40,11 +41,36 @@ def test_baseline_rag_without_system1(monkeypatch):
     assert "abstained_by_system1" not in result
 
 
+def test_direct_rag_without_document_scope_fails_closed(monkeypatch):
+    """No scope must stop processing before query routing, retrieval, or generation."""
+    monkeypatch.setattr(
+        "app.rag.get_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("LLM must not be called")),
+    )
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.search",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("retrieval must not be called")),
+    )
+
+    result = answer_question(
+        question="Give hemoglobin level",
+        provider="groq",
+        api_key="gsk-test-key",
+        system1_enabled=False,
+    )
+
+    assert result["route"] == "NO_SELECTION"
+    assert result["sources"] == []
+    assert result["metrics"]["retrieved_chunks"] == 0
+    assert "No documents are selected" in result["answer"]
+
+
 def test_missing_system1_key_raises_configuration_error():
     """Verify that enabling System 1 without supplying an API key raises a clear configuration error."""
     with pytest.raises(ValueError, match="System 1 evidence decision gate is enabled, but no API key was provided"):
         answer_question(
             question="What is the hemoglobin level?",
+            document_names=["test.pdf"],
             provider="groq",
             api_key="gsk-test-key",
             system1_enabled=True,
@@ -55,6 +81,7 @@ def test_missing_system1_key_raises_configuration_error():
     with pytest.raises(ValueError, match="System 1 evidence decision gate is enabled, but no API key was provided"):
         answer_question(
             question="What is the hemoglobin level?",
+            document_names=["test.pdf"],
             provider="groq",
             api_key="gsk-test-key",
             system1_enabled=True,
@@ -63,8 +90,13 @@ def test_missing_system1_key_raises_configuration_error():
         )
 
 
-def test_api_ask_endpoint_rejects_enabled_system1_with_missing_key():
+def test_api_ask_endpoint_rejects_enabled_system1_with_missing_key(monkeypatch):
     """Verify POST /ask endpoint returns HTTP 400 when System 1 is enabled without a key."""
+    import app.main as main_module
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "lab.pdf", "patient_label": "Patient A"}
+    ])
     resp = client.post(
         "/ask",
         json={
@@ -75,6 +107,7 @@ def test_api_ask_endpoint_rejects_enabled_system1_with_missing_key():
             "system1_provider": "codiv",
             "system1_api_key": "",
             "session_id": "test-session",
+            "document_ids": ["doc-a"],
         }
     )
     assert resp.status_code == 400
@@ -111,6 +144,7 @@ def test_system1_sufficient_invokes_system2(monkeypatch):
 
     result = answer_question(
         question="What is the hemoglobin level?",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-test-key",
         system1_enabled=True,
@@ -150,6 +184,7 @@ def test_system1_insufficient_triggers_bounded_retry_and_abstention(monkeypatch)
 
     result = answer_question(
         question="What was the troponin level?",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,
@@ -205,6 +240,7 @@ def test_system1_insufficient_bounded_retry_recovers_when_expanded(monkeypatch):
 
     result = answer_question(
         question="What was the troponin level?",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,
@@ -244,6 +280,7 @@ def test_system1_error_triggers_conservative_safety_halt(monkeypatch):
 
     result = answer_question(
         question="What is the hemoglobin level?",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,
@@ -310,7 +347,9 @@ def test_api_ask_endpoint_with_system1(monkeypatch):
         }
 
     monkeypatch.setattr(main_mod, "answer_question", mock_answer)
-    monkeypatch.setattr(main_mod, "list_document_records", lambda session_id: [])
+    monkeypatch.setattr(main_mod, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "lab.pdf", "patient_label": "Patient A"}
+    ])
 
     resp = client.post(
         "/ask",
@@ -322,6 +361,7 @@ def test_api_ask_endpoint_with_system1(monkeypatch):
             "system1_provider": "codiv",
             "system1_api_key": "codiv-test-key",
             "session_id": "test-session",
+            "document_ids": ["doc-a"],
         }
     )
 
@@ -374,6 +414,7 @@ def test_all_hemoglobin_route_with_system1_disabled(monkeypatch):
 
     result = answer_question(
         question="List all hemoglobin levels across all patients",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=False,
@@ -409,6 +450,7 @@ def test_all_hemoglobin_route_with_system1_enabled_sufficient(monkeypatch):
 
     result = answer_question(
         question="List all hemoglobin levels across all patients",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,
@@ -446,6 +488,7 @@ def test_all_hemoglobin_route_with_system1_enabled_insufficient_abstains(monkeyp
 
     result = answer_question(
         question="List all hemoglobin levels across all patients",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,
@@ -481,6 +524,7 @@ def test_all_hemoglobin_route_with_system1_enabled_error_halts(monkeypatch):
 
     result = answer_question(
         question="List all hemoglobin levels across all patients",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,
@@ -501,6 +545,7 @@ def test_all_hemoglobin_route_with_system1_enabled_missing_key_raises():
     with pytest.raises(ValueError, match="System 1 evidence decision gate is enabled, but no API key was provided"):
         answer_question(
             question="List all hemoglobin levels across all patients",
+            document_names=["test.pdf"],
             provider="groq",
             api_key="gsk-key",
             system1_enabled=True,
@@ -515,6 +560,7 @@ def test_all_hemoglobin_route_empty_corpus(monkeypatch):
 
     result = answer_question(
         question="List all hemoglobin levels across all patients",
+        document_names=["test.pdf"],
         provider="groq",
         api_key="gsk-key",
         system1_enabled=True,

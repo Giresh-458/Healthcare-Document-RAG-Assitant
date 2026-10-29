@@ -190,14 +190,26 @@ with st.sidebar:
     selected_patient_scope = st.selectbox("Patient scope", patient_scope_options, index=0)
     patient_label_to_send = None if selected_patient_scope == "No patient selected" else selected_patient_scope
 
-    if docs:
-        st.caption("Search within specific documents:")
-        selected_chat_docs = st.multiselect("Document Filter", docs, default=[], placeholder="Select documents to search...", label_visibility="collapsed")
-        docs_to_send = selected_chat_docs
+    if records:
+        st.caption("Search within specific upload records (duplicate filenames remain separate):")
+        record_labels = {
+            f"{r['document_name']} · {r.get('patient_label', 'unspecified')} · {r['document_id'][-8:]}": r["document_id"]
+            for r in records
+        }
+        selected_record_labels = st.multiselect(
+            "Document Filter", list(record_labels.keys()), default=[],
+            placeholder="Select documents to search...", label_visibility="collapsed"
+        )
+        docs_to_send = [record_labels[label] for label in selected_record_labels]
 
-        st.markdown("**Currently Indexed:**")
-        for d in docs:
-            st.markdown(f'<div class="doc-item">{html.escape(str(d))}</div>', unsafe_allow_html=True)
+        st.markdown("**Currently Indexed Uploads:**")
+        for record in records:
+            st.markdown(
+                f'<div class="doc-item">{html.escape(str(record["document_name"]))} · '
+                f'{html.escape(str(record.get("patient_label", "unspecified")))} · '
+                f'{html.escape(str(record["document_id"][-8:]))}</div>',
+                unsafe_allow_html=True,
+            )
     else:
         docs_to_send = []
         patient_label_to_send = None
@@ -270,7 +282,8 @@ with tab1:
                         ]
                         try:
                             data = answer_question(
-                                prompt, provider, api_key, docs_to_send, st.session_state.session_id,
+                                prompt, provider, api_key, None, st.session_state.session_id,
+                                document_ids=docs_to_send,
                                 patient_label=patient_label_to_send,
                                 system1_enabled=system1_enabled,
                                 system1_provider=system1_provider,

@@ -212,6 +212,16 @@ def ask_question_endpoint(req: AskRequest):
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": False},
         }
 
+    # Missing selection is not permission to search the session/global index.
+    if req.document_ids is None and req.document_names is None:
+        return {
+            "answer": "No documents are selected. Please select at least one PDF in Chat Context before asking a question.",
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0},
+            "route": "NO_SELECTION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": False},
+        }
+
     records = list_document_records(session_id)
     if req.document_ids is not None:
         allowed_ids = {record["document_id"] for record in records}
@@ -219,16 +229,11 @@ def ask_question_endpoint(req: AskRequest):
             raise HTTPException(status_code=404, detail="One or more documents were not found in this session")
 
     patient_label = (req.patient_label or "").strip()
-    available_labels = sorted({
-        record["patient_label"] for record in records
-        if record["patient_label"] and record["patient_label"] != "unspecified"
-    })
     asks_about_self = bool(re.search(r"\b(my|mine|myself)\b", question, re.IGNORECASE))
     if asks_about_self:
         return {
             "answer": "This prototype has no verified user identity or patient authorization, so I cannot safely answer “my” from an uploaded file or selected label. Ask about a specific patient record you are authorized to access, or add real identity and authorization controls.",
             "clarification_required": True,
-            "available_patient_labels": available_labels,
             "sources": [],
             "metrics": {"retrieved_chunks": 0},
             "route": "CLARIFICATION",
@@ -244,11 +249,6 @@ def ask_question_endpoint(req: AskRequest):
         if (req.document_ids and record.get("document_id") in req.document_ids)
         or (req.document_names and record.get("document_name") in req.document_names)
     ]
-    selected_labels = {
-        record.get("patient_label") for record in selected_records
-        if record.get("patient_label") and record.get("patient_label") != "unspecified"
-    }
-
     patient_in_q = bool(re.search(r"\b(Patient\s+[A-Za-z0-9_-]+|(?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+)\b", question, re.I))
     report_in_q = bool(re.search(r"\b(?:report|accession|reg(?:istration)?\.?)\b\s*(?:id|no|number|#)?\s*[:#-]?\s*[A-Za-z0-9_-]+", question, re.I))
     test_match = re.search(r"\b(hemoglobin|haemoglobin|hgb|hb|platelets?|glucose|cholesterol|potassium|sodium|wbc|rbc|creatinine|calcium|bilirubin|hba1c)\b", question, re.IGNORECASE)
@@ -259,10 +259,8 @@ def ask_question_endpoint(req: AskRequest):
         and not report_in_q
         and not asks_multi_record
         and (
-            len(selected_labels) > 1
-            or len(selected_records) > 1
+            len(selected_records) > 1
             or selected_doc_count > 1
-            or (len(available_labels) > 1 and not req.document_ids and not req.document_names)
         )
     )
     if ambiguous_patient_scope:
@@ -275,7 +273,6 @@ def ask_question_endpoint(req: AskRequest):
         return {
             "answer": clarification_msg,
             "clarification_required": True,
-            "available_patient_labels": sorted(selected_labels or set(available_labels)),
             "sources": [],
             "metrics": {"retrieved_chunks": 0},
             "route": "CLARIFICATION",

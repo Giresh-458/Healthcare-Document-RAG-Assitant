@@ -160,11 +160,16 @@ def test_ambiguous_multi_patient_question_requests_clarification(monkeypatch):
         {"document_id": "doc-b", "document_name": "same.pdf", "patient_label": "Patient B"},
     ])
     monkeypatch.setattr(main_module, "answer_question", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not answer ambiguous question")))
-    response = client.post("/ask", json={"question": "What is the hemoglobin level?", "session_id": "test-session"})
+    response = client.post("/ask", json={
+        "question": "What is the hemoglobin level?",
+        "session_id": "test-session",
+        "document_ids": ["doc-a", "doc-b"],
+    })
     assert response.status_code == 200
     assert response.json()["clarification_required"] is True
     assert response.json()["route"] == "CLARIFICATION"
-    assert set(response.json()["available_patient_labels"]) == {"Patient A", "Patient B"}
+    assert "Which patient's or report's hemoglobin level" in response.json()["answer"]
+    assert "available_patient_labels" not in response.json()
 
 
 def test_my_question_does_not_assume_uploader_is_patient(monkeypatch):
@@ -174,7 +179,11 @@ def test_my_question_does_not_assume_uploader_is_patient(monkeypatch):
     monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
         {"document_id": "doc-a", "document_name": "report.pdf", "patient_label": "Patient A"},
     ])
-    response = client.post("/ask", json={"question": "What is my hemoglobin level?", "session_id": "test-session"})
+    response = client.post("/ask", json={
+        "question": "What is my hemoglobin level?",
+        "session_id": "test-session",
+        "document_ids": ["doc-a"],
+    })
     assert response.status_code == 200
     assert response.json()["clarification_required"] is True
 
@@ -206,7 +215,7 @@ def test_my_question_still_requires_verified_identity_even_with_selected_label(m
     ])
     response = client.post(
         "/ask",
-        json={"question": "What is my hemoglobin level?", "patient_label": "Patient A", "session_id": "test-session"},
+        json={"question": "What is my hemoglobin level?", "patient_label": "Patient A", "session_id": "test-session", "document_ids": ["doc-a"]},
     )
     assert response.status_code == 200
     assert response.json()["clarification_required"] is True
@@ -221,6 +230,40 @@ def test_explicit_all_hemoglobin_query_is_not_blocked_as_ambiguous(monkeypatch):
         {"document_id": "doc-b", "document_name": "b.pdf", "patient_label": "Patient B"},
     ])
     monkeypatch.setattr(main_module, "answer_question", lambda *args, **kwargs: {"route": "EXHAUSTIVE_HEMOGLOBIN_SCAN"})
-    response = client.post("/ask", json={"question": "List all hemoglobin levels across all patients", "session_id": "test-session"})
+    response = client.post("/ask", json={
+        "question": "List all hemoglobin levels across all patients",
+        "session_id": "test-session",
+        "document_ids": ["doc-a", "doc-b"],
+    })
     assert response.status_code == 200
     assert response.json()["route"] == "EXHAUSTIVE_HEMOGLOBIN_SCAN"
+
+
+
+def test_ask_without_document_selection_fails_closed_before_lookup_or_generation(monkeypatch):
+    """A missing selection must not inspect the index or call the RAG pipeline."""
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(
+        main_module,
+        "list_document_records",
+        lambda session_id: (_ for _ in ()).throw(AssertionError("must not inspect indexed records")),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "answer_question",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not generate an answer")),
+    )
+
+    response = client.post(
+        "/ask",
+        json={"question": "Give hemoglobin level", "session_id": "test-session"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["route"] == "NO_SELECTION"
+    assert "No documents are selected" in data["answer"]
+    assert data["sources"] == []
+    assert data["metrics"]["retrieved_chunks"] == 0
