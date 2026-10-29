@@ -259,8 +259,7 @@ def ask_question_endpoint(req: AskRequest):
         and not report_in_q
         and not asks_multi_record
         and (
-            len(selected_labels) > 1
-            or len(selected_records) > 1
+            len(selected_records) > 1
             or selected_doc_count > 1
         )
     )
