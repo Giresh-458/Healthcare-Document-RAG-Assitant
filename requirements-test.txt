@@ -11,3 +11,10 @@ pydantic
 langchain-core
 langchain-text-splitters
 rank-bm25
+langchain-huggingface
+langchain-openai
+langchain-groq
+langchain-google-genai
+sentence-transformers
+requests
+streamlit

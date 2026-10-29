@@ -18,6 +18,13 @@ def get_embeddings_model():
     """Load the optional embedding dependency and model only when retrieval needs it."""
     global _embeddings_instance
     if _embeddings_instance is None:
+        import sys
+        if "langchain_core.pydantic_v1" not in sys.modules:
+            try:
+                import pydantic.v1 as pydantic_v1
+                sys.modules["langchain_core.pydantic_v1"] = pydantic_v1
+            except ImportError:
+                pass
         from langchain_huggingface import HuggingFaceEmbeddings
         _embeddings_instance = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -51,6 +58,8 @@ def add_documents(
             "session_id": session_id,
             "document_id": document_id,
             "patient_label": patient_label.strip() or "unspecified",
+            "report_id": metadata.get("report_id", ""),
+            "report_date": metadata.get("report_date", ""),
         })
         metadatas.append(metadata)
         texts.append(chunk["text"])
@@ -61,8 +70,8 @@ def add_documents(
     collection.upsert(ids=ids, embeddings=vectors, metadatas=metadatas, documents=texts)
 
 
-def search_documents(question: str) -> List[Dict]:
-    """Simple dense-only utility retained for compatibility."""
+def search_documents(question: str, session_id: str = "global") -> List[Dict]:
+    """Simple dense-only utility scoped to session_id for compatibility."""
     count = collection.count()
     if count == 0:
         return []
@@ -70,6 +79,7 @@ def search_documents(question: str) -> List[Dict]:
     result = collection.query(
         query_embeddings=[embeddings.embed_query(question)],
         n_results=min(4, count),
+        where={"session_id": session_id},
     )
     return [
         {"text": text, "metadata": metadata}
@@ -96,12 +106,21 @@ def list_document_records(session_id: str = "global") -> List[Dict]:
             continue
         # Legacy chunks did not have document_id; keep them visible as a legacy record.
         doc_id = metadata.get("document_id") or f"legacy:{metadata['document_name']}"
-        records.setdefault(doc_id, {
-            "document_id": doc_id,
-            "document_name": metadata["document_name"],
-            "patient_label": metadata.get("patient_label") or "unspecified",
-            "session_id": metadata.get("session_id", session_id),
-        })
+        rec = records.get(doc_id)
+        if rec is None:
+            records[doc_id] = {
+                "document_id": doc_id,
+                "document_name": metadata["document_name"],
+                "patient_label": metadata.get("patient_label") or "unspecified",
+                "session_id": metadata.get("session_id", session_id),
+                "report_id": metadata.get("report_id") or "",
+                "report_date": metadata.get("report_date") or "",
+            }
+        else:
+            if not rec.get("report_id") and metadata.get("report_id"):
+                rec["report_id"] = metadata["report_id"]
+            if not rec.get("report_date") and metadata.get("report_date"):
+                rec["report_date"] = metadata["report_date"]
     return sorted(records.values(), key=lambda item: (item["document_name"].casefold(), item["document_id"]))
 
 

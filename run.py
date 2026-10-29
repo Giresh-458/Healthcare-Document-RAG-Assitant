@@ -29,12 +29,26 @@ def main():
     )
     
     try:
-        backend.wait()
-        frontend.wait()
+        while True:
+            backend_code = backend.poll()
+            if backend_code is not None:
+                print(f"[ERROR] FastAPI backend exited unexpectedly with code {backend_code}")
+                break
+            frontend_code = frontend.poll()
+            if frontend_code is not None:
+                print(f"[INFO] Streamlit frontend exited with code {frontend_code}")
+                break
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\n[INFO] Terminating backend and frontend processes...")
-        backend.terminate()
-        frontend.terminate()
+    finally:
+        for proc in (backend, frontend):
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
 if __name__ == "__main__":
     main()

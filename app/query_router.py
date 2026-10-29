@@ -1,3 +1,4 @@
+import re
 from langchain_core.messages import HumanMessage, SystemMessage
 
 class QueryRouter:
@@ -27,14 +28,11 @@ class QueryRouter:
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=question)
             ])
-            classification = response.content.strip().upper()
-            
-            if "AGGREGATION" in classification:
-                return "AGGREGATION"
-            elif "IRRELEVANT" in classification:
-                return "IRRELEVANT"
-            else:
-                return "FACTOID"
-        except Exception as e:
+            raw_content = response.content.strip().upper()
+            first_match = re.search(r"\b(FACTOID|AGGREGATION|IRRELEVANT)\b", raw_content)
+            if first_match:
+                return first_match.group(1)
+            return "FACTOID"
+        except Exception:
             # Safe fallback if the LLM classification fails for any reason
             return "FACTOID"

@@ -385,9 +385,9 @@ with st.sidebar:
             }
             selected_record_labels = st.multiselect(
                 "Document Filter", list(record_labels.keys()), default=[],
-                placeholder="All records in this session", label_visibility="collapsed"
+                placeholder="Select documents to search...", label_visibility="collapsed"
             )
-            docs_to_send = [record_labels[label] for label in selected_record_labels] or None
+            docs_to_send = [record_labels[label] for label in selected_record_labels]
             st.markdown("**Currently Indexed Uploads:**")
             for record in records:
                 st.markdown(
@@ -397,11 +397,11 @@ with st.sidebar:
                     unsafe_allow_html=True,
                 )
         else:
-            docs_to_send = None
+            docs_to_send = []
             patient_label_to_send = None
             st.caption("No documents indexed yet.")
     except (requests.RequestException, ValueError, KeyError):
-        docs, records, docs_to_send, patient_label_to_send = [], [], None, None
+        docs, records, docs_to_send, patient_label_to_send = [], [], [], None
         st.caption("Backend offline or document index unavailable.")
 
     st.markdown("---")
@@ -544,12 +544,19 @@ with tab1:
             with st.chat_message("assistant"):
                 if not docs:
                     st.error("⚠️ Please upload a document or load the demo report first.")
+                elif not docs_to_send:
+                    st.warning("⚠️ No documents are selected. Please select at least one PDF in Chat Context before asking a question.")
                 elif not api_key:
                     st.error("⚠️ Please provide a System 2 LLM API key in the sidebar configuration to proceed.")
                 elif system1_enabled and not system1_api_key.strip():
                     st.warning("⚠️ System 1 Gate is enabled but no System 1 API key was provided. Enter a System 1 key in the sidebar, or uncheck the gate to run baseline System 2.")
                 else:
                     with st.spinner("Retrieving evidence, evaluating System 1 gate, generating answer..."):
+                        recent_history = [
+                            {"role": m["role"], "content": m["content"]}
+                            for m in st.session_state.messages[-4:]
+                            if m.get("role") in {"user", "assistant"}
+                        ]
                         payload = {
                             "question": prompt,
                             "provider": provider,
@@ -560,6 +567,7 @@ with tab1:
                             "system1_enabled": system1_enabled,
                             "system1_provider": system1_provider,
                             "system1_api_key": system1_api_key.strip(),
+                            "conversation_history": recent_history,
                         }
                         try:
                             res = requests.post(f"{API_URL}/ask", json=payload, headers=_api_headers(), timeout=60)

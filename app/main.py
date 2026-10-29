@@ -7,7 +7,7 @@ import hmac
 import os
 import re
 import uuid
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -57,11 +57,13 @@ class AskRequest(BaseModel):
     document_names: Optional[List[str]] = None  # legacy filename filter
     document_ids: Optional[List[str]] = None
     patient_label: Optional[str] = Field(default=None, max_length=128)
+    report_id: Optional[str] = Field(default=None, max_length=128)
     session_id: str = Field(default="global", min_length=1, max_length=128)
     system1_enabled: bool = False
     system1_provider: Literal["codiv", "jevmodel", "laya"] = "codiv"
     system1_api_key: str = Field(default="", max_length=512)
     system1_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    conversation_history: Optional[List[Dict[str, str]]] = None
 
 
 class System1TestRequest(BaseModel):
@@ -182,7 +184,7 @@ def get_document_pdf(document_id: str, session_id: str = "global"):
 
 
 @app.post("/ask", dependencies=[Depends(require_app_token)])
-async def ask_question_endpoint(req: AskRequest):
+def ask_question_endpoint(req: AskRequest):
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
@@ -192,11 +194,30 @@ async def ask_question_endpoint(req: AskRequest):
     if req.document_ids is not None and len(req.document_ids) > 500:
         raise HTTPException(status_code=400, detail="Too many document filters")
 
+    # Phase 2 Case A: Explicit empty document selection fails closed
+    if req.document_ids is not None and len(req.document_ids) == 0:
+        return {
+            "answer": "No documents are selected. Please select at least one PDF in Chat Context before asking a question.",
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0},
+            "route": "NO_SELECTION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": False},
+        }
+    if req.document_names is not None and len(req.document_names) == 0:
+        return {
+            "answer": "No documents are selected. Please select at least one PDF in Chat Context before asking a question.",
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0},
+            "route": "NO_SELECTION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": False},
+        }
+
     records = list_document_records(session_id)
-    if req.document_ids:
+    if req.document_ids is not None:
         allowed_ids = {record["document_id"] for record in records}
         if any(doc_id not in allowed_ids for doc_id in req.document_ids):
             raise HTTPException(status_code=404, detail="One or more documents were not found in this session")
+
     patient_label = (req.patient_label or "").strip()
     available_labels = sorted({
         record["patient_label"] for record in records
@@ -213,6 +234,7 @@ async def ask_question_endpoint(req: AskRequest):
             "route": "CLARIFICATION",
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
         }
+
     asks_multi_record = bool(re.search(r"\b(all|every|across|each)\b", question, re.IGNORECASE))
     selected_records = [record for record in records if req.document_ids and record["document_id"] in req.document_ids]
     selected_labels = {record["patient_label"] for record in selected_records if record["patient_label"] != "unspecified"}
@@ -223,8 +245,15 @@ async def ask_question_endpoint(req: AskRequest):
              or len(selected_labels) > 1)
     )
     if ambiguous_patient_scope:
+        test_match = re.search(r"\b(hemoglobin|haemoglobin|hgb|hb|platelet|glucose|cholesterol|potassium|sodium|wbc|rbc)\b", question, re.IGNORECASE)
+        test_name = "hemoglobin" if (test_match and test_match.group(1).lower() in ["hb", "hgb", "haemoglobin"]) else (test_match.group(1).lower() if test_match else None)
+        clarification_msg = (
+            f"Which patient's or report's {test_name} level would you like to know?"
+            if test_name
+            else "These records are labelled for multiple patients. Which patient's records should I use? Select a patient label or restrict the query to one upload record. I will not combine patient records for a single-patient question."
+        )
         return {
-            "answer": "These records are labelled for multiple patients. Which patient's records should I use? Select a patient label or restrict the query to one upload record. I will not combine patient records for a single-patient question.",
+            "answer": clarification_msg,
             "clarification_required": True,
             "available_patient_labels": sorted(selected_labels or set(available_labels)),
             "sources": [],
@@ -241,6 +270,8 @@ async def ask_question_endpoint(req: AskRequest):
             system1_provider=req.system1_provider,
             system1_api_key=req.system1_api_key or None,
             system1_threshold=req.system1_threshold,
+            conversation_history=req.conversation_history,
+            report_id=req.report_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

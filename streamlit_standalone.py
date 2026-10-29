@@ -7,7 +7,7 @@ import base64
 # Import our backend logic directly instead of using requests!
 from app.pdf_processor import process_pdf
 from app.text_processor import chunk_text
-from app.vector_store import add_documents, list_documents
+from app.vector_store import add_documents, list_documents, list_document_records
 from app.rag import answer_question
 from app.system1 import get_system1_adapter, SYSTEM1_PROVIDERS
 from app.config import OCR_ENABLED
@@ -121,7 +121,7 @@ with st.sidebar:
             with st.spinner("Indexing demo document..."):
                 pages = process_pdf(demo_path, "hemoglobin-report-format.pdf")
                 chunks = chunk_text(pages)
-                add_documents(chunks, st.session_state.session_id)
+                add_documents(chunks, st.session_state.session_id, patient_label="Demo Patient")
                 st.success("Demo report loaded successfully.")
 
     uploaded_files = st.file_uploader(
@@ -183,17 +183,24 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Chat Context")
+    records = list_document_records(st.session_state.session_id)
     docs = list_documents(st.session_state.session_id)
+    labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") != "unspecified"})
+    patient_scope_options = ["No patient selected"] + labels
+    selected_patient_scope = st.selectbox("Patient scope", patient_scope_options, index=0)
+    patient_label_to_send = None if selected_patient_scope == "No patient selected" else selected_patient_scope
+
     if docs:
         st.caption("Search within specific documents:")
-        selected_chat_docs = st.multiselect("Document Filter", docs, default=[], label_visibility="collapsed")
-        docs_to_send = selected_chat_docs if len(selected_chat_docs) > 0 else None
+        selected_chat_docs = st.multiselect("Document Filter", docs, default=[], placeholder="Select documents to search...", label_visibility="collapsed")
+        docs_to_send = selected_chat_docs
 
         st.markdown("**Currently Indexed:**")
         for d in docs:
             st.markdown(f'<div class="doc-item">{html.escape(str(d))}</div>', unsafe_allow_html=True)
     else:
-        docs_to_send = None
+        docs_to_send = []
+        patient_label_to_send = None
         st.caption("No documents indexed yet.")
 
 # ──────────────────────── HELPER ────────────────────────
@@ -213,7 +220,8 @@ def render_assistant_extras(structured_data, route, metrics, sources):
             unsafe_allow_html=True
         )
 
-    st.markdown(f"**Confidence:** `{structured_data.get('confidence', 'N/A')}`")
+    conf = (structured_data or {}).get("confidence", "N/A")
+    st.markdown(f"**Confidence:** `{conf}`")
     entities = (structured_data or {}).get("medical_entities", [])
     if entities:
         tags_html = " ".join([f'<span class="entity-tag">{html.escape(str(e))}</span>' for e in entities])
@@ -249,16 +257,25 @@ with tab1:
             with st.chat_message("assistant"):
                 if not docs:
                     st.error("⚠️ Please upload a document or load the demo report first.")
+                elif not docs_to_send:
+                    st.warning("⚠️ No documents are selected. Please select at least one PDF in Chat Context before asking a question.")
                 elif not api_key:
                     st.error("⚠️ Please provide an API key in the sidebar configuration to proceed.")
                 else:
                     with st.spinner("Routing query, retrieving context, generating response..."):
+                        recent_history = [
+                            {"role": m["role"], "content": m["content"]}
+                            for m in st.session_state.messages[-4:]
+                            if m.get("role") in {"user", "assistant"}
+                        ]
                         try:
                             data = answer_question(
                                 prompt, provider, api_key, docs_to_send, st.session_state.session_id,
+                                patient_label=patient_label_to_send,
                                 system1_enabled=system1_enabled,
                                 system1_provider=system1_provider,
                                 system1_api_key=system1_api_key.strip(),
+                                conversation_history=recent_history,
                             )
 
                             answer = data.get("answer", "")

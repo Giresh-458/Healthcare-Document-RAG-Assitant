@@ -1,20 +1,43 @@
 import re
+from typing import Dict, List
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import CHUNK_SIZE, CHUNK_OVERLAP
-from typing import List, Dict
 from app.phi_redactor import PHIRedactor
 from app.medical_ner import MedicalNER
+
 
 def clean_text(text: str) -> str:
     """
     Cleans the extracted text by removing excessive spaces and newlines
     while preserving important medical terms, numbers, and punctuation.
     """
-    # Replace multiple newlines with a single newline
     text = re.sub(r'\n+', '\n', text)
-    # Replace multiple spaces with a single space
     text = re.sub(r' +', ' ', text)
     return text.strip()
+
+
+def _extract_page_metadata(text: str) -> Dict[str, str]:
+    """Extract report ID and report date from page text if explicitly present."""
+    meta = {"report_id": "", "report_date": ""}
+    id_match = re.search(
+        r"(?i)\b(?:report\s*(?:id|no|number)?|reg(?:istration)?\.?\s*(?:no|num|number)?|accession\s*(?:no|num|number)?)\s*[:#-]?\s*([A-Za-z0-9_-]+)",
+        text,
+    )
+    if id_match:
+        val = id_match.group(1).strip()
+        if not val.startswith("[REDACTED"):
+            meta["report_id"] = val
+
+    date_match = re.search(
+        r"(?i)\b(?:collected|received|reported|registered|date)\s*(?:on|date)?\s*[:#-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})",
+        text,
+    )
+    if date_match:
+        val = date_match.group(1).strip()
+        if not val.startswith("[REDACTED"):
+            meta["report_date"] = val
+    return meta
+
 
 def chunk_text(pages: List[Dict]) -> List[Dict]:
     """
@@ -29,8 +52,9 @@ def chunk_text(pages: List[Dict]) -> List[Dict]:
 
     chunks = []
     for page_data in pages:
-        # Phase 2: Redact PHI before storing
-        redacted_text = PHIRedactor.redact(page_data["text"])
+        # Redact PHI before extracting metadata or storing chunks
+        redacted_text = PHIRedactor.redact(page_data.get("text", ""))
+        page_meta = _extract_page_metadata(redacted_text)
         
         cleaned_text = clean_text(redacted_text)
         if not cleaned_text:
@@ -38,9 +62,8 @@ def chunk_text(pages: List[Dict]) -> List[Dict]:
 
         page_chunks = text_splitter.split_text(cleaned_text)
         for chunk in page_chunks:
-            # Phase 2: Extract medical entities for metadata
+            # Extract medical entities for metadata
             entities = MedicalNER.extract_entities(chunk)
-            # Join into string so ChromaDB can store it in metadata
             entities_str = ",".join(entities) if entities else "none"
             
             chunks.append({
@@ -48,7 +71,9 @@ def chunk_text(pages: List[Dict]) -> List[Dict]:
                 "metadata": {
                     "document_name": page_data["document_name"],
                     "page": page_data["page"],
-                    "medical_entities": entities_str
+                    "medical_entities": entities_str,
+                    "report_id": page_meta.get("report_id", ""),
+                    "report_date": page_meta.get("report_date", ""),
                 }
             })
 
