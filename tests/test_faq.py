@@ -115,7 +115,7 @@ def test_streamlit_app_faq_button_and_dialog():
     """Verify Streamlit app renders FAQ button and expands dialog upon click."""
     from streamlit.testing.v1 import AppTest
 
-    at = AppTest.from_file("streamlit_app.py", default_timeout=15)
+    at = AppTest.from_file("../streamlit_app.py", default_timeout=15)
     at.run()
     assert not at.exception
 
@@ -132,7 +132,7 @@ def test_streamlit_standalone_faq_button():
     """Verify standalone entrypoint also includes FAQ button."""
     from streamlit.testing.v1 import AppTest
 
-    at = AppTest.from_file("streamlit_standalone.py", default_timeout=15)
+    at = AppTest.from_file("../streamlit_standalone.py", default_timeout=15)
     at.run()
     assert not at.exception
 
