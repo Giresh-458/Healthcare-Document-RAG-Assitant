@@ -101,11 +101,12 @@ HealthRAG implements a strict conservative policy:
 - **No HIPAA Compliance Claimed:** External free public tiers are not HIPAA-compliant. Use synthetic or de-identified data.
 
 ### Onboarding Steps
-1. In the Streamlit sidebar, find **System 1: Evidence Decision Gate**.
-2. Select your provider (e.g. **Codiv / OpenJev**).
-3. Paste your provider API key.
-4. Click **Test System 1 Connection** to send a non-sensitive probe request via `POST /system1/test`.
-5. Upon verification, the gate is active and protects incoming queries.
+1. In the Streamlit sidebar, click **❓ FAQ / Help** to open the built-in guide covering setup for all 6 supported models, free tiers, and troubleshooting.
+2. Under **System 2: Answer LLM**, select your preferred provider (e.g. **Groq** with `openai/gpt-oss-120b`, **Google Gemini** with `gemini-1.5-flash`, or **OpenAI** with `gpt-4o-mini`) and enter your API key.
+3. Under **System 1: Evidence Decision Gate**, select your provider (e.g. **Codiv / OpenJev**, **JevModel**, or **Laya Studio**).
+4. Paste your provider API key.
+5. Click **Test System 1 Connection** to send a non-sensitive probe request via `POST /system1/test`.
+6. Upon verification, the gate is active and protects incoming queries. (You can also uncheck System 1 at any time to run baseline System 2).
 
 ---
 

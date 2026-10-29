@@ -6,6 +6,8 @@ import uuid
 import html
 from dotenv import load_dotenv
 
+from app.faq_content import show_faq_dialog, render_faq_panel
+
 load_dotenv()
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
@@ -192,6 +194,9 @@ st.markdown("""
 
 # ──────────────────────── SIDEBAR ────────────────────────
 with st.sidebar:
+    if st.button("❓ FAQ / Help", use_container_width=True, help="Open FAQ, API key setup instructions, free tier comparison, and troubleshooting"):
+        show_faq_dialog()
+
     st.markdown("### System 2: Answer LLM")
     st.caption("Generates grounded medical answers and citations.")
     provider = st.selectbox("LLM Provider", ["groq", "openai", "gemini"], index=0)

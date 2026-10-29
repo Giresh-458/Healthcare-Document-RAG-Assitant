@@ -11,6 +11,7 @@ from app.vector_store import add_documents, list_documents
 from app.rag import answer_question
 from app.system1 import get_system1_adapter, SYSTEM1_PROVIDERS
 from app.config import OCR_ENABLED
+from app.faq_content import show_faq_dialog
 
 # ──────────────────────── SESSION ISOLATION ────────────────────────
 if "session_id" not in st.session_state:
@@ -73,6 +74,9 @@ st.markdown("""
 
 # ──────────────────────── SIDEBAR ────────────────────────
 with st.sidebar:
+    if st.button("❓ FAQ / Help", use_container_width=True, help="Open FAQ, API key setup instructions, free tier comparison, and troubleshooting"):
+        show_faq_dialog()
+
     st.markdown("### System 2: Answer LLM")
     provider = st.selectbox("Provider", ["groq", "openai", "gemini"], index=0)
     api_key = st.text_input("LLM API Key", type="password", placeholder="Paste API key here...")
