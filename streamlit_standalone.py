@@ -12,6 +12,7 @@ from app.rag import answer_question
 from app.system1 import get_system1_adapter, SYSTEM1_PROVIDERS
 from app.config import OCR_ENABLED
 from app.faq_content import show_faq_dialog
+from app.bug_report import show_bug_report_dialog
 
 # ──────────────────────── SESSION ISOLATION ────────────────────────
 if "session_id" not in st.session_state:
@@ -74,8 +75,13 @@ st.markdown("""
 
 # ──────────────────────── SIDEBAR ────────────────────────
 with st.sidebar:
-    if st.button("❓ FAQ / Help", use_container_width=True, help="Open FAQ, API key setup instructions, free tier comparison, and troubleshooting"):
-        show_faq_dialog()
+    col_help, col_bug = st.columns(2)
+    with col_help:
+        if st.button("❓ FAQ / Help", use_container_width=True, help="Open FAQ, API key setup instructions, free tier comparison, and troubleshooting"):
+            show_faq_dialog()
+    with col_bug:
+        if st.button("🐞 Report Bug", use_container_width=True, help="Report a bug, error, or feedback directly to the maintainer"):
+            show_bug_report_dialog()
 
     st.markdown("### System 2: Answer LLM")
     provider = st.selectbox("Provider", ["groq", "openai", "gemini"], index=0)

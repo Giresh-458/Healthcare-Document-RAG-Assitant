@@ -107,10 +107,68 @@ HealthRAG implements a strict conservative policy:
 4. Paste your provider API key.
 5. Click **Test System 1 Connection** to send a non-sensitive probe request via `POST /system1/test`.
 6. Upon verification, the gate is active and protects incoming queries. (You can also uncheck System 1 at any time to run baseline System 2).
+7. If you encounter any bugs, errors, or unexpected behavior, click **🐞 Report Bug** in the sidebar to send an actionable feedback report to the project owner.
 
 ---
 
-## 5. Evaluation Harness & Testing Methodology
+## 5. In-App Bug Reporting & Email Configuration
+
+HealthRAG includes a dedicated **🐞 Report a Bug** dialog accessible from the sidebar. Users can submit bug descriptions, reproduction steps, error messages, and suggestions directly to the project maintainer's email inbox without interrupting their active chat session.
+
+### Privacy & Medical Data Isolation
+- **Strict Exclusion:** Uploaded clinical PDFs, extracted text chunks, patient identifiers, and session API keys are **never** attached or included in bug reports.
+- **Header Sanitization:** All subject fields are stripped of newline/CRLF characters to prevent header injection.
+- **Anti-Spam Controls:** Features a hidden honeypot filter, a 20-second submission cooldown, and a 5-report limit per session.
+
+### Configuration Methods
+
+#### Option A: Streamlit Cloud Secrets (Recommended for Cloud Deployment)
+In your Streamlit Cloud management dashboard, navigate to **App Settings** → **Secrets** (or edit `.streamlit/secrets.toml` locally) and add:
+
+```toml
+# Destination inbox to receive bug reports
+BUG_REPORT_TO_EMAIL = "your-email@example.com"
+
+# Standard SMTP Configuration (e.g. Gmail, Brevo, SendGrid, Amazon SES)
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USERNAME = "your-sending-address@gmail.com"
+SMTP_PASSWORD = "your-16-character-app-password"
+SMTP_FROM_EMAIL = "your-sending-address@gmail.com"
+SMTP_USE_TLS = true
+
+# Optional alternative: Transactional Resend API
+# RESEND_API_KEY = "re_xxxxxxxxxxxx"
+```
+
+#### Option B: Environment Variables (`.env`)
+For local execution, Docker, or self-hosted servers, add these variables to your `.env` file:
+```bash
+BUG_REPORT_TO_EMAIL=your-email@example.com
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your-sending-address@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM_EMAIL=your-sending-address@gmail.com
+SMTP_USE_TLS=true
+```
+
+### Safe Testing Procedure
+1. If email variables are **not configured**, clicking **Submit Report** safely warns the user that delivery is unconfigured, displays the exact missing configuration keys, and preserves the user's form input so nothing is lost.
+2. When configured, submitting a test report sends an email with the subject:
+   `[HealthRAG Bug Report] [Issue Type] Short Title`
+   and displays a green confirmation containing a unique reference ID (e.g. `HRAG-BUG-A1B2C3D4`).
+3. Automated regression tests (`tests/test_bug_report.py`) use mocked providers and never send real outbound emails.
+
+### Provider Quotas & Verified Limits
+- **Gmail SMTP (with App Password):** Up to 500 emails/day for free personal Google accounts.
+- **Brevo (formerly Sendinblue):** Free tier includes up to 300 emails/day.
+- **Resend Transactional API:** Free tier includes up to 100 emails/day (3,000 emails/month).
+- **HealthRAG Rate Limits:** Enforces a 20-second cooldown between submissions and a maximum of 5 reports per session to protect against inbox flooding.
+
+---
+
+## 6. Evaluation Harness & Testing Methodology
 
 HealthRAG includes an evaluation framework (`eval/evaluate_system1.py`) supporting two distinct modes:
 
@@ -151,7 +209,7 @@ python -m eval.evaluate_system1 --live
 
 ---
 
-## 6. Technology Stack
+## 7. Technology Stack
 
 - **Backend:** FastAPI, Uvicorn, Pydantic v2, HTTPX
 - **Frontend:** Streamlit with custom CSS and live metrics telemetry
@@ -162,7 +220,7 @@ python -m eval.evaluate_system1 --live
 
 ---
 
-## 7. Quickstart Guide
+## 8. Quickstart Guide
 
 ### 1. Installation
 ```bash
@@ -203,6 +261,6 @@ python -m pytest
 
 ---
 
-## 8. Clinical & Regulatory Disclaimer
+## 9. Clinical & Regulatory Disclaimer
 
 HealthRAG is an experimental prototype for research and evaluation. It is **not** a certified medical device and is **not** intended for primary diagnosis, treatment planning, or acute clinical decision-making. Always consult a licensed physician or healthcare professional for clinical advice.
