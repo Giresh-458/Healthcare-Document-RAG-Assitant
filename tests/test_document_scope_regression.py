@@ -1513,3 +1513,55 @@ def test_report_id_candidate_detection_does_not_treat_dates_or_single_hyphen_cod
     assert _contains_report_id_candidate("What is the result for SYN-A-004?")
     assert not _contains_report_id_candidate("What is the result from 2026-09-12?")
     assert not _contains_report_id_candidate("What is the COVID-19 result?")
+
+
+def test_upload_metadata_infers_patient_label_from_cover_page_for_all_chunks(monkeypatch):
+    """A pseudonymous patient label on a cover page is retained for later result pages."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384, [0.2] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [
+        {
+            "text": "Patient B\nRoutine laboratory report",
+            "metadata": {"document_name": "02_patient_b_low_hemoglobin.pdf", "page": 1},
+        },
+        {
+            "text": "Hemoglobin 10.8 g/dL",
+            "metadata": {"document_name": "02_patient_b_low_hemoglobin.pdf", "page": 2},
+        },
+    ]
+    add_documents(chunks, session_id="qa-session", document_id="doc-b")
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert [item["patient_label"] for item in stored_metadata] == ["Patient B", "Patient B"]
+
+
+def test_upload_metadata_marks_mixed_patient_pdf_without_assigning_filename_patient(monkeypatch):
+    """A mixed-patient PDF must not inherit a single-patient label from its filename."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384, [0.2] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [
+        {
+            "text": "Patient A: hemoglobin 13.4 g/dL",
+            "metadata": {"document_name": "patient_a_multi_record.pdf", "page": 1},
+        },
+        {
+            "text": "Patient B: hemoglobin 10.8 g/dL",
+            "metadata": {"document_name": "patient_a_multi_record.pdf", "page": 2},
+        },
+    ]
+    add_documents(chunks, session_id="qa-session", document_id="doc-mixed")
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert [item["patient_label"] for item in stored_metadata] == ["mixed", "mixed"]
