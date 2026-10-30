@@ -1325,3 +1325,22 @@ def test_48_reference_range_scan_does_not_invent_missing_interval(monkeypatch):
     assert "No explicit hemoglobin reference range was found" in result["answer"]
     assert "13.4" not in result["answer"]
     assert result["sources"] == []
+
+
+def test_49_reference_range_scan_handles_test_and_interval_split_across_chunks(monkeypatch):
+    """Chunks from the same PDF page are reassembled before interval extraction."""
+    test_chunk = _make_chunk("doc-a", "patient_a_labs.pdf", 1, "Hemoglobin 13.4 g/dL")
+    range_chunk = _make_chunk("doc-a", "patient_a_labs.pdf", 1, "Reference interval: 12.0-16.0 g/dL")
+    range_chunk["id"] = "doc-a_page1_chunk2"
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [test_chunk, range_chunk])
+
+    result = answer_question(
+        question="What is the hemoglobin reference range according to uploaded reports?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a"],
+    )
+
+    assert "12.0–16.0 g/dL" in result["answer"]
+    assert result["route"] == "REFERENCE_RANGE_SCAN"
+    assert len(result["sources"]) == 1
