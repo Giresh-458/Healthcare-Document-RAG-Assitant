@@ -52,7 +52,7 @@ def _scope_phrase_matches(value: str, phrase: str) -> bool:
     tokens = re.findall(r"[A-Za-z0-9]+", phrase)
     if not tokens:
         return False
-    pattern = r"(?<!\w)" + r"[\s_-]*".join(re.escape(token) for token in tokens) + r"(?!\w)"
+    pattern = r"(?<![A-Za-z0-9])" + r"[\s_-]*".join(re.escape(token) for token in tokens) + r"(?![A-Za-z0-9])"
     return bool(re.search(pattern, str(value), re.I))
 
 
