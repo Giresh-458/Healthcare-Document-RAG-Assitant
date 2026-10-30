@@ -43,7 +43,7 @@ def _infer_patient_label(chunks: List[Dict], document_name: str) -> str:
     labels = set()
     for chunk in chunks:
         text = str(chunk.get("text", "") or "")
-        for match in re.finditer(r"\\bPatient\\s+([A-Za-z]|[0-9]{1,3})\\b", text, re.I):
+        for match in re.finditer(r"\bPatient\s+([A-Za-z]|[0-9]{1,3})\b", text, re.I):
             token = match.group(1)
             labels.add(token.upper() if token.isalpha() else token)
 
@@ -54,7 +54,7 @@ def _infer_patient_label(chunks: List[Dict], document_name: str) -> str:
     if len(labels) == 1:
         return f"Patient {next(iter(labels))}"
 
-    filename_match = re.search(r"\\bpatient[_-]([a-z0-9]+)\\b", document_name, re.I)
+    filename_match = re.search(r"\bpatient[_-]([a-z0-9]+)\b", document_name, re.I)
     if filename_match:
         return f"Patient {filename_match.group(1).upper()}"
     return "unspecified"
