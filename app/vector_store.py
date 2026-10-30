@@ -1,6 +1,7 @@
 """Local persistent vector store for the educational RAG prototype."""
 import hashlib
 import os
+import re
 import uuid
 from typing import Dict, List, Optional
 
@@ -37,6 +38,28 @@ def _chunk_id(session_id: str, document_id: str, page: int, index: int) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _infer_patient_label(chunks: List[Dict], document_name: str) -> str:
+    """Infer only explicit synthetic Patient X labels; never infer real names."""
+    labels = set()
+    for chunk in chunks:
+        text = str(chunk.get("text", "") or "")
+        for match in re.finditer(r"\\bPatient\\s+([A-Za-z]|[0-9]{1,3})\\b", text, re.I):
+            token = match.group(1)
+            labels.add(token.upper() if token.isalpha() else token)
+
+    if len(labels) > 1:
+        # A mixed-record PDF must not be assigned to whichever patient happens
+        # to appear first. Keep it visibly distinct and require explicit scope.
+        return "mixed"
+    if len(labels) == 1:
+        return f"Patient {next(iter(labels))}"
+
+    filename_match = re.search(r"\\bpatient[_-]([a-z0-9]+)\\b", document_name, re.I)
+    if filename_match:
+        return f"Patient {filename_match.group(1).upper()}"
+    return "unspecified"
+
+
 def add_documents(
     chunks: List[Dict],
     session_id: str = "global",
@@ -51,13 +74,15 @@ def add_documents(
         raise ValueError("add_documents expects chunks from exactly one document")
 
     document_id = document_id or uuid.uuid4().hex
+    inferred_patient_label = _infer_patient_label(chunks, document_name)
+    effective_patient_label = patient_label.strip() or inferred_patient_label
     texts, metadatas, ids = [], [], []
     for index, chunk in enumerate(chunks):
         metadata = chunk["metadata"].copy()
         metadata.update({
             "session_id": session_id,
             "document_id": document_id,
-            "patient_label": patient_label.strip() or "unspecified",
+            "patient_label": effective_patient_label,
             "report_id": metadata.get("report_id", ""),
             "report_date": metadata.get("report_date", ""),
         })
