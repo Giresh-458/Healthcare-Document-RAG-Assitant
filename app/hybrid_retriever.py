@@ -56,6 +56,62 @@ def _scope_phrase_matches(value: str, phrase: str) -> bool:
     return bool(re.search(pattern, str(value), re.I))
 
 
+def filter_patient_chunks(chunks: List[Dict], patient_query: Optional[str]) -> List[Dict]:
+    """Filter to one patient while retaining unlabelled pages from single-patient uploads."""
+    if not patient_query:
+        return chunks
+
+    matching_documents = set()
+    direct_matches = set()
+    identities_by_document = {}
+
+    for index, chunk in enumerate(chunks):
+        metadata = chunk.get("metadata", {})
+        document_key = metadata.get("document_id") or metadata.get("document_name") or chunk.get("id") or index
+        identities = identities_by_document.setdefault(document_key, set())
+
+        label = str(metadata.get("patient_label", "") or "").strip()
+        if label and label.casefold() != "unspecified":
+            identities.add(label)
+
+        text = str(chunk.get("text", "") or "")
+        for match in re.finditer(r"\bPatient[\s_-]+([A-Za-z0-9_-]+)\b", text, re.I):
+            token = match.group(1)
+            if token.casefold() not in {"id", "name", "record", "history", "details"}:
+                identities.add(f"Patient {token}")
+        for match in re.finditer(r"\b((?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+(?:\s+[A-Za-z]+)?)\b", text, re.I):
+            identities.add(match.group(1).strip())
+
+        document_name = str(metadata.get("document_name", "") or "")
+        filename_match = re.search(r"\bpatient[_-]([a-z0-9]+)\b", document_name, re.I)
+        if filename_match:
+            identities.add(f"Patient {filename_match.group(1)}")
+
+        direct = (
+            _scope_phrase_matches(label, patient_query)
+            or _scope_phrase_matches(text, patient_query)
+            or _scope_phrase_matches(document_name, patient_query)
+        )
+        if direct:
+            matching_documents.add(document_key)
+            direct_matches.add(chunk.get("id") or index)
+
+    filtered = []
+    for index, chunk in enumerate(chunks):
+        metadata = chunk.get("metadata", {})
+        document_key = metadata.get("document_id") or metadata.get("document_name") or chunk.get("id") or index
+        identities = identities_by_document.get(document_key, set())
+        document_has_only_target_patient = (
+            not identities
+            or all(_scope_phrase_matches(identity, patient_query) for identity in identities)
+        )
+        if document_key in matching_documents and (
+            document_has_only_target_patient or (chunk.get("id") or index) in direct_matches
+        ):
+            filtered.append(chunk)
+    return filtered
+
+
 class HybridRetriever:
     """Combine BM25 and dense ranks without comparing their raw scores."""
 
@@ -158,12 +214,7 @@ class HybridRetriever:
         # BM25/dense top-K ranking. Patient/report mentions may live in PDF text
         # or filenames even when upload metadata is absent.
         if patient_query:
-            chunks = [
-                chunk for chunk in chunks
-                if _scope_phrase_matches(chunk.get("metadata", {}).get("patient_label", ""), patient_query)
-                or _scope_phrase_matches(chunk.get("text", ""), patient_query)
-                or _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), patient_query)
-            ]
+            chunks = filter_patient_chunks(chunks, patient_query)
         if report_query:
             # Report IDs are extracted per PDF page. Resolve the owning upload
             # from any matching page, then retain the other pages from that same
