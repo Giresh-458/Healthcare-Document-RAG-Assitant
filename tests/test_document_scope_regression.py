@@ -197,8 +197,7 @@ def test_06_higher_scoring_unselected_document_is_excluded(monkeypatch):
         # Even if unselected exists in vector store, get_all_chunks strictly filters to allowed IDs
         return {
             "ids": [chunk_selected["id"], chunk_unselected["id"]],
-            "documents": [chunk_selected["text"], chunk_unselected["text"]],
-            "metadatas": [chunk_selected["metadata"], chunk_unselected["metadata"]],
+            "documents": [chunk_selected["text"], chunk_unselected["text"]],            "metadatas": [chunk_selected["metadata"], chunk_unselected["metadata"]],
         }
 
     monkeypatch.setattr("app.hybrid_retriever.collection.get", mock_get)
@@ -397,7 +396,6 @@ def test_12_system1_and_system2_receive_same_validated_evidence_scope(monkeypatc
             medical_entities=["hemoglobin"],
             requires_doctor_review=True,
         )
-
     mock_chat.with_structured_output.return_value.invoke = mock_structured_invoke
     monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
     monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
@@ -597,8 +595,7 @@ def test_18_patient_g_and_patient_h_remain_separate(monkeypatch):
     mock_chat = MagicMock()
     mock_chat.with_structured_output.return_value.invoke.return_value = MedicalAnswer(
         answer="Patient G's hemoglobin is 12.1 g/dL.",
-        confidence="high",
-        medical_entities=["hemoglobin"],
+        confidence="high",        medical_entities=["hemoglobin"],
         requires_doctor_review=True,
     )
     monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
@@ -797,8 +794,7 @@ def test_23_scalability_benchmark_3000_documents(monkeypatch):
     # Verification:
     # 1. Retrieval latency is fast and bounded
     assert elapsed_ms < 500, f"Retrieval took {elapsed_ms:.1f}ms (expected < 500ms)"
-    # 2. Context remains strictly bounded by top_k
-    assert len(retrieved) <= 4
+    # 2. Context remains strictly bounded by top_k    assert len(retrieved) <= 4
     # 3. Correctness: 100% of retrieved chunks belong to the selected 5 document IDs
     for chunk in retrieved:
         assert chunk["metadata"]["document_id"] in selected_ids
@@ -997,8 +993,7 @@ def test_34_exact_user_scenario_what_is_hemoglobin_level_with_3_unlabelled_docs(
 
     # Must ask for clarification
     assert result.get("clarification_required") is True
-    assert result["route"] == "CLARIFICATION"
-    assert "Which patient's or report's hemoglobin level would you like to know?" in result["answer"]
+    assert result["route"] == "CLARIFICATION"    assert "Which patient's or report's hemoglobin level would you like to know?" in result["answer"]
     # Must NOT list Patient A, Patient B, or 13.4, or 10.8 in the answer
     assert "Patient A" not in result["answer"]
     assert "Patient B" not in result["answer"]
@@ -1110,7 +1105,7 @@ def test_40_explicit_report_id_is_applied_before_top_k_retrieval(monkeypatch):
         report_query="SYN-A-002",
     )
 
-    assert [item["id"] for item in results] == ["doc-b"]
+    assert [item["metadata"]["document_id"] for item in results] == ["doc-b"]
     assert "12.9" in results[0]["text"]
     assert "13.4" not in results[0]["text"]
     mock_collection.query.assert_not_called()
@@ -1197,7 +1192,6 @@ def test_44_patient_name_on_cover_page_keeps_later_lab_result_page(monkeypatch):
     """A single-patient upload retains later pages even if only its cover names the patient."""
     cover = _make_chunk("doc-patient", "lab.pdf", 1, "Patient A clinical laboratory report")
     result_page = _make_chunk("doc-patient", "lab.pdf", 2, "Hemoglobin 13.4 g/dL")
-
     captured_context = None
     mock_chat = MagicMock()
 
