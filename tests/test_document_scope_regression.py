@@ -1051,7 +1051,7 @@ def test_36_report_descriptor_is_applied_before_top_k_retrieval(monkeypatch):
         top_k=1,
         document_ids=["doc-r", "doc-f"],
         patient_query="Patient A",
-        report_query="follow-up",
+        report_type_query="follow-up",
     )
 
     assert [item["id"] for item in results] == ["doc-f"]
