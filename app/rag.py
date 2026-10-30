@@ -438,10 +438,38 @@ def answer_question(
 
     asks_all = _is_multi_record_query(question)
     asks_hemoglobin = bool(re.search(r"\b(hemoglobin|haemoglobin|hgb|hb)\b", question, re.I))
-    # Resolve explicit patient/report scope BEFORE top-K retrieval. Resolving it
-    # afterwards can discard the intended patient's report before filtering begins.
-    target_patient = patient_label or _extract_target_patient(question, conversation_history)
-    target_report = report_id or _extract_target_report(question, conversation_history)
+    # Resolve explicit question scope before considering UI or conversation scope.
+    explicit_patient = _extract_target_patient(question)
+    explicit_report = _extract_target_report(question)
+    if patient_label and explicit_patient and not (
+        _scope_phrase_matches(patient_label, explicit_patient)
+        or _scope_phrase_matches(explicit_patient, patient_label)
+    ):
+        return {
+            "answer": f"The current Chat Context is scoped to {patient_label}, but your question names {explicit_patient}. Please make those scopes agree before continuing.",
+            "clarification_required": True,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+    if report_id and explicit_report and not (
+        _scope_phrase_matches(report_id, explicit_report)
+        or _scope_phrase_matches(explicit_report, report_id)
+    ):
+        return {
+            "answer": f"The selected report scope is {report_id}, but your question names {explicit_report}. Please make those scopes agree before continuing.",
+            "clarification_required": True,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+
+    # Patient/report scope is applied to the complete selected-document corpus
+    # before BM25/dense top-K ranking, not inferred from the top-K result set.
+    target_patient = explicit_patient or patient_label or _extract_target_patient(question, conversation_history)
+    target_report = explicit_report or report_id or _extract_target_report(question, conversation_history)
     report_descriptor = _extract_report_descriptor(question)
 
     # Explicit all-record hemoglobin questions use a full-corpus scan across selected documents.
