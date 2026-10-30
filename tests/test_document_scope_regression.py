@@ -1,9 +1,7 @@
-"""Targeted Regression Tests for Document Selection, Patient/Report Scope, and Scalability.
+"""Regression tests for document selection, patient/report scope, and retrieval scalability.
 
-Covers all 27 requirements in Phase 8:
-- Tests 1-12: Document selection, empty selection fail-closed, isolation, caching, fallbacks.
-- Tests 13-22: Patient/report scope, ambiguous queries, latest-date resolution, injection safety.
-- Tests 23-27: Scalability benchmark (3,000+ synthetic docs), deduplication, citations, regressions.
+Covers the original Phase 8 cases plus patient/report routing and reference-range
+regressions in tests 35-50.
 """
 import time
 import pytest
