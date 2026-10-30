@@ -1,7 +1,7 @@
 """Regression tests for document selection, patient/report scope, and retrieval scalability.
 
 Covers the original Phase 8 cases plus patient/report routing and reference-range
-regressions in tests 35-50.
+regressions in tests 35-51.
 """
 import time
 import pytest
