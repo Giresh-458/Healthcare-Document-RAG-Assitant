@@ -150,7 +150,7 @@ def _extract_target_report(
 
 
 def _extract_report_descriptor(question: str) -> Optional[str]:
-    """Extract a plain-language report type such as 'follow-up' or 'routine'."""
+    """Extract one unambiguous report type; comparisons may name multiple types."""
     descriptors = (
         ("follow-up", r"\bfollow[\s_-]?up\b"),
         ("routine", r"\broutine\b"),
@@ -159,10 +159,8 @@ def _extract_report_descriptor(question: str) -> Optional[str]:
         ("discharge", r"\bdischarge\b"),
         ("admission", r"\badmission\b"),
     )
-    for label, pattern in descriptors:
-        if re.search(pattern, question, re.I):
-            return label
-    return None
+    matches = [label for label, pattern in descriptors if re.search(pattern, question, re.I)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _scope_phrase_matches(value: str, phrase: str) -> bool:
