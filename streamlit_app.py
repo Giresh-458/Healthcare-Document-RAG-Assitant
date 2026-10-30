@@ -306,7 +306,8 @@ with st.sidebar:
         else:
             st.error("Demo file not found in sample_documents/ directory.")
 
-    patient_label_input = st.text_input("Patient label for this upload (optional)", placeholder="e.g., Patient A; not identity verification")
+    patient_label_input = st.text_input("Patient label for all selected PDFs (optional)", placeholder="e.g., Patient A; not identity verification")
+    st.caption("This label is applied to every PDF in the selected batch. If the files belong to different patients, leave it blank or upload each PDF separately with its own label.")
     st.caption("Upload multiple synthetic clinical PDFs (5MB maximum per file).")
     uploaded_files = st.file_uploader(
         "Upload PDF files",
@@ -373,7 +374,7 @@ with st.sidebar:
         docs_payload = docs_response.json() if docs_response.status_code == 200 else {}
         records = docs_payload.get("records", [])
         docs = docs_payload.get("documents", [])
-        labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") != "unspecified"})
+        labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") not in {"unspecified", "mixed"}})
         patient_scope_options = ["No patient selected"] + labels
         selected_patient_scope = st.selectbox("Patient scope", patient_scope_options, index=0)
         patient_label_to_send = None if selected_patient_scope == "No patient selected" else selected_patient_scope

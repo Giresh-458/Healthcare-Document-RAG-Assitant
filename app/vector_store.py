@@ -1,6 +1,7 @@
 """Local persistent vector store for the educational RAG prototype."""
 import hashlib
 import os
+import re
 import uuid
 from typing import Dict, List, Optional
 
@@ -37,6 +38,28 @@ def _chunk_id(session_id: str, document_id: str, page: int, index: int) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _infer_patient_label(chunks: List[Dict], document_name: str) -> str:
+    """Infer only explicit synthetic Patient X labels; never infer real names."""
+    labels = set()
+    for chunk in chunks:
+        text = str(chunk.get("text", "") or "")
+        for match in re.finditer(r"\bPatient\s+([A-Za-z]|[0-9]{1,3})\b", text, re.I):
+            token = match.group(1)
+            labels.add(token.upper() if token.isalpha() else token)
+
+    if len(labels) > 1:
+        # A mixed-record PDF must not be assigned to whichever patient happens
+        # to appear first. Keep it visibly distinct and require explicit scope.
+        return "mixed"
+    if len(labels) == 1:
+        return f"Patient {next(iter(labels))}"
+
+    filename_match = re.search(r"(?:^|[^A-Za-z0-9])patient[_-]([a-z0-9]+)(?=[^A-Za-z0-9]|$)", document_name, re.I)
+    if filename_match:
+        return f"Patient {filename_match.group(1).upper()}"
+    return "unspecified"
+
+
 def add_documents(
     chunks: List[Dict],
     session_id: str = "global",
@@ -51,13 +74,27 @@ def add_documents(
         raise ValueError("add_documents expects chunks from exactly one document")
 
     document_id = document_id or uuid.uuid4().hex
+    inferred_patient_label = _infer_patient_label(chunks, document_name)
+    supplied_patient_label = patient_label.strip()
+    if inferred_patient_label == "mixed":
+        effective_patient_label = "mixed"
+    elif (
+        supplied_patient_label
+        and inferred_patient_label != "unspecified"
+        and supplied_patient_label.casefold() != inferred_patient_label.casefold()
+    ):
+        # A conflicting upload label must not silently override the PDF's
+        # explicit pseudonymous patient label.
+        effective_patient_label = "mixed"
+    else:
+        effective_patient_label = supplied_patient_label or inferred_patient_label
     texts, metadatas, ids = [], [], []
     for index, chunk in enumerate(chunks):
         metadata = chunk["metadata"].copy()
         metadata.update({
             "session_id": session_id,
             "document_id": document_id,
-            "patient_label": patient_label.strip() or "unspecified",
+            "patient_label": effective_patient_label,
             "report_id": metadata.get("report_id", ""),
             "report_date": metadata.get("report_date", ""),
         })
@@ -98,7 +135,9 @@ def delete_document(document_name: str, session_id: str = "global", document_id:
 
 
 def list_document_records(session_id: str = "global") -> List[Dict]:
-    """Return one record per uploaded document, including legacy indexed records."""
+    """Return one record per upload, inferring legacy labels from filenames only."""
+    # Keep this listing lightweight: Streamlit calls it during reruns, so do not
+    # fetch every chunk's full text merely to populate the document selector.
     results = collection.get(where={"session_id": session_id}, include=["metadatas"])
     records = {}
     for metadata in (results.get("metadatas") or []):
@@ -121,6 +160,19 @@ def list_document_records(session_id: str = "global") -> List[Dict]:
                 rec["report_id"] = metadata["report_id"]
             if not rec.get("report_date") and metadata.get("report_date"):
                 rec["report_date"] = metadata["report_date"]
+
+    for record in records.values():
+        stored_label = record.get("patient_label") or "unspecified"
+        inferred_label = _infer_patient_label([], record["document_name"])
+        if (
+            stored_label != "unspecified"
+            and inferred_label != "unspecified"
+            and stored_label.casefold() != inferred_label.casefold()
+        ):
+            record["patient_label"] = "mixed"
+        elif stored_label == "unspecified":
+            record["patient_label"] = inferred_label
+
     return sorted(records.values(), key=lambda item: (item["document_name"].casefold(), item["document_id"]))
 
 

@@ -1384,3 +1384,345 @@ def test_51_report_comparison_does_not_collapse_to_one_report_type():
     assert _extract_report_descriptor(
         "Compare Patient A's routine and follow-up hemoglobin reports"
     ) is None
+
+
+def test_bare_report_identifier_is_resolved_from_selected_upload_metadata(monkeypatch):
+    """A report ID in the question is recognized even without the word 'report'."""
+    cover = _make_chunk(
+        "doc-syn-a-004",
+        "patient_a_labs.pdf",
+        1,
+        "Report ID: SYN-A-004",
+        patient_label="unspecified",
+        report_id="SYN-A-004",
+    )
+    result_page = _make_chunk(
+        "doc-syn-a-004",
+        "patient_a_labs.pdf",
+        2,
+        "Hemoglobin 11.2 g/dL",
+        patient_label="unspecified",
+    )
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.get_all_chunks",
+        lambda **kwargs: [cover, result_page],
+    )
+    captured = {}
+    mock_chat = MagicMock()
+    mock_chat.with_structured_output.return_value.invoke.return_value = MedicalAnswer(
+        answer="The report records hemoglobin at 11.2 g/dL.",
+        confidence="high",
+        medical_entities=["hemoglobin"],
+        requires_doctor_review=True,
+    )
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+
+    def mock_search(question, **kwargs):
+        captured.update(kwargs)
+        return [result_page]
+
+    monkeypatch.setattr("app.rag.HybridRetriever.search", mock_search)
+
+    result = answer_question(
+        question="What is the hemoglobin result for SYN-A-004?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-syn-a-004"],
+    )
+
+    assert captured["report_query"] == "SYN-A-004"
+    assert "11.2 g/dL" in result["answer"]
+    assert [source["document_id"] for source in result["sources"]] == ["doc-syn-a-004"]
+
+
+def test_system1_expanded_retry_preserves_patient_and_report_type_scope(monkeypatch):
+    """System 1 retry must retain text-derived patient and report-type filters."""
+    first_page = _make_chunk(
+        "doc-followup",
+        "patient_a_followup_report.pdf",
+        2,
+        "Hemoglobin 12.9 g/dL",
+        patient_label="unspecified",
+    )
+    second_page = _make_chunk(
+        "doc-followup",
+        "patient_a_followup_report.pdf",
+        3,
+        "Follow-up laboratory result confirmed.",
+        patient_label="unspecified",
+    )
+    search_calls = []
+    mock_chat = MagicMock()
+    mock_chat.with_structured_output.return_value.invoke.return_value = MedicalAnswer(
+        answer="Patient A's follow-up hemoglobin is 12.9 g/dL.",
+        confidence="high",
+        medical_entities=["hemoglobin"],
+        requires_doctor_review=True,
+    )
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+
+    def mock_search(question, **kwargs):
+        search_calls.append(kwargs)
+        return [first_page] if len(search_calls) == 1 else [first_page, second_page]
+
+    monkeypatch.setattr("app.rag.HybridRetriever.search", mock_search)
+
+    class FakeDecision:
+        def __init__(self, status):
+            self.status = status
+            self.error_message = None
+            self.retry_performed = False
+
+        def to_dict(self):
+            return {"status": self.status, "retry_performed": self.retry_performed}
+
+    decisions = [FakeDecision("INSUFFICIENT"), FakeDecision("SUFFICIENT")]
+
+    def evaluate(*args, **kwargs):
+        return decisions.pop(0)
+
+    monkeypatch.setattr("app.rag.evaluate_evidence_sufficiency", evaluate)
+
+    result = answer_question(
+        question="What is Patient A's follow-up hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-followup"],
+        system1_enabled=True,
+        system1_provider="codiv",
+        system1_api_key="codiv-test-key",
+    )
+
+    assert len(search_calls) == 2
+    retry_scope = search_calls[1]
+    assert retry_scope["patient_label"] is None
+    assert retry_scope["report_id"] is None
+    assert retry_scope["patient_query"] == "Patient A"
+    assert retry_scope["report_query"] is None
+    assert retry_scope["report_type_query"] == "follow-up"
+    assert "12.9 g/dL" in result["answer"]
+    assert result["metrics"]["system1_decision"]["status"] == "SUFFICIENT"
+
+
+def test_report_id_candidate_detection_does_not_treat_dates_or_single_hyphen_codes_as_report_ids():
+    """Unlabelled ID lookup is only triggered for candidate tokens and still validates against corpus metadata."""
+    from app.rag import _contains_report_id_candidate
+
+    assert _contains_report_id_candidate("What is the result for SYN-A-004?")
+    assert not _contains_report_id_candidate("What is the result from 2026-09-12?")
+    assert not _contains_report_id_candidate("What is the COVID-19 result?")
+
+
+def test_upload_metadata_infers_patient_label_from_cover_page_for_all_chunks(monkeypatch):
+    """A pseudonymous patient label on a cover page is retained for later result pages."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384, [0.2] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [
+        {
+            "text": "Patient B\nRoutine laboratory report",
+            "metadata": {"document_name": "02_patient_b_low_hemoglobin.pdf", "page": 1},
+        },
+        {
+            "text": "Hemoglobin 10.8 g/dL",
+            "metadata": {"document_name": "02_patient_b_low_hemoglobin.pdf", "page": 2},
+        },
+    ]
+    add_documents(chunks, session_id="qa-session", document_id="doc-b")
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert [item["patient_label"] for item in stored_metadata] == ["Patient B", "Patient B"]
+
+
+def test_upload_metadata_marks_mixed_patient_pdf_without_assigning_filename_patient(monkeypatch):
+    """A mixed-patient PDF must not inherit a single-patient label from its filename."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384, [0.2] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [
+        {
+            "text": "Patient A: hemoglobin 13.4 g/dL",
+            "metadata": {"document_name": "patient_a_multi_record.pdf", "page": 1},
+        },
+        {
+            "text": "Patient B: hemoglobin 10.8 g/dL",
+            "metadata": {"document_name": "patient_a_multi_record.pdf", "page": 2},
+        },
+    ]
+    add_documents(chunks, session_id="qa-session", document_id="doc-mixed")
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert [item["patient_label"] for item in stored_metadata] == ["mixed", "mixed"]
+
+
+def test_upload_metadata_fails_closed_when_supplied_label_conflicts_with_pdf(monkeypatch):
+    """A user-supplied label cannot silently override a conflicting PDF label."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [{
+        "text": "Patient B: hemoglobin 10.8 g/dL",
+        "metadata": {"document_name": "02_patient_b_low_hemoglobin.pdf", "page": 1},
+    }]
+    add_documents(
+        chunks,
+        session_id="qa-session",
+        document_id="doc-conflict",
+        patient_label="Patient A",
+    )
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert stored_metadata[0]["patient_label"] == "mixed"
+
+
+def test_upload_metadata_infers_patient_label_from_prefixed_filename_when_text_has_none(monkeypatch):
+    """A Patient X filename prefix is recognized even when the filename starts with a sequence number."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [{
+        "text": "Metabolic panel results are listed below.",
+        "metadata": {"document_name": "03_patient_c_metabolic_panel.pdf", "page": 1},
+    }]
+    add_documents(chunks, session_id="qa-session", document_id="doc-c")
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert stored_metadata[0]["patient_label"] == "Patient C"
+
+
+def test_get_all_chunks_patient_scope_keeps_unlabelled_result_pages(monkeypatch):
+    """Patient scope must be resolved across the selected upload, not per-chunk metadata."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunks = [
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 1, "Patient A"),
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 2, "Hemoglobin 13.4 g/dL"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 1, "Patient B"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 2, "Hemoglobin 10.8 g/dL"),
+    ]
+    captured = {}
+
+    def mock_get(where, include):
+        captured["where"] = where
+        return {
+            "ids": [chunk["id"] for chunk in chunks],
+            "documents": [chunk["text"] for chunk in chunks],
+            "metadatas": [chunk["metadata"] for chunk in chunks],
+        }
+
+    monkeypatch.setattr("app.hybrid_retriever.collection.get", mock_get)
+    result = HybridRetriever.get_all_chunks(
+        session_id="qa-session",
+        document_ids=["doc-a", "doc-b"],
+        patient_label="Patient B",
+    )
+
+    assert {chunk["metadata"]["document_id"] for chunk in result} == {"doc-b"}
+    assert {chunk["metadata"]["page"] for chunk in result} == {1, 2}
+    assert "patient_label" not in str(captured["where"])
+
+
+def test_get_all_chunks_report_scope_keeps_result_pages_when_id_is_on_cover(monkeypatch):
+    """A report ID on page one scopes the complete upload, not just that page."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunks = [
+        _make_chunk("doc-a", "patient_a_reports.pdf", 1, "Report ID: SYN-A-004", report_id="SYN-A-004"),
+        _make_chunk("doc-a", "patient_a_reports.pdf", 2, "Hemoglobin 11.2 g/dL"),
+        _make_chunk("doc-b", "patient_a_reports.pdf", 1, "Report ID: SYN-A-005", report_id="SYN-A-005"),
+        _make_chunk("doc-b", "patient_a_reports.pdf", 2, "Hemoglobin 14.0 g/dL"),
+    ]
+
+    monkeypatch.setattr(
+        "app.hybrid_retriever.collection.get",
+        lambda where, include: {
+            "ids": [chunk["id"] for chunk in chunks],
+            "documents": [chunk["text"] for chunk in chunks],
+            "metadatas": [chunk["metadata"] for chunk in chunks],
+        },
+    )
+    result = HybridRetriever.get_all_chunks(
+        session_id="qa-session",
+        document_ids=["doc-a", "doc-b"],
+        report_id="SYN-A-004",
+    )
+
+    assert {chunk["metadata"]["document_id"] for chunk in result} == {"doc-a"}
+    assert {chunk["metadata"]["page"] for chunk in result} == {1, 2}
+
+
+def test_document_records_infer_patient_labels_from_legacy_filenames_without_loading_text(monkeypatch):
+    """Legacy records with unspecified metadata get safe filename labels without fetching chunk text."""
+    from app.vector_store import list_document_records
+
+    metadata = [
+        {"document_id": "doc-a", "document_name": "01_patient_a_routine_labs.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+        {"document_id": "doc-a", "document_name": "01_patient_a_routine_labs.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+        {"document_id": "doc-mixed", "document_name": "08_multiple_records_scope_conflict.pdf", "patient_label": "mixed", "session_id": "qa-session"},
+    ]
+    captured = {}
+
+    def mock_get(where, include):
+        captured["include"] = include
+        return {"metadatas": metadata}
+
+    monkeypatch.setattr("app.vector_store.collection.get", mock_get)
+
+    records = list_document_records("qa-session")
+    labels = {record["document_id"]: record["patient_label"] for record in records}
+
+    assert labels == {"doc-a": "Patient A", "doc-mixed": "mixed"}
+    assert captured["include"] == ["metadatas"]
+
+
+def test_selected_patient_scope_with_legacy_metadata_uses_filtered_bm25_not_empty_dense_filter(monkeypatch):
+    """Legacy unspecified patient metadata must not cause a false-empty dense-only scope."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunks = [
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 1, "Patient A"),
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 2, "Hemoglobin 13.4 g/dL"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 1, "Patient B"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 2, "Hemoglobin 10.8 g/dL"),
+    ]
+    mock_collection = MagicMock()
+    mock_collection.get.return_value = {
+        "ids": [chunk["id"] for chunk in chunks],
+        "documents": [chunk["text"] for chunk in chunks],
+        "metadatas": [chunk["metadata"] for chunk in chunks],
+    }
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "hemoglobin",
+        top_k=4,
+        session_id="qa-session",
+        document_ids=["doc-a", "doc-b"],
+        patient_label="Patient B",
+    )
+
+    assert results
+    assert {chunk["metadata"]["document_id"] for chunk in results} == {"doc-b"}
+    mock_collection.query.assert_not_called()

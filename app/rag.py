@@ -149,6 +149,13 @@ def _extract_target_report(
     return None
 
 
+def _contains_report_id_candidate(question: str) -> bool:
+    """Return whether a query contains a hyphenated identifier worth validating against selected reports."""
+    # Do not treat arbitrary identifiers as report IDs here. The candidate is
+    # validated against report_id metadata from the selected upload corpus below.
+    return bool(re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}\b", question, re.I))
+
+
 def _extract_report_descriptor(question: str) -> Optional[str]:
     """Extract one unambiguous report type; comparisons may name multiple types."""
     descriptors = (
@@ -642,6 +649,25 @@ def answer_question(
     # Resolve explicit question scope before considering UI or conversation scope.
     explicit_patient = _extract_target_patient(question)
     explicit_report = _extract_target_report(question)
+    if explicit_report is None and _contains_report_id_candidate(question):
+        # Users often quote a report identifier without writing the word
+        # "report" (for example, "the hemoglobin result for SYN-A-004").
+        # Resolve such tokens only against IDs actually present in the selected
+        # upload corpus, avoiding false positives for dates and medical codes.
+        scoped_chunks = HybridRetriever.get_all_chunks(
+            document_names=document_names,
+            session_id=session_id,
+            document_ids=document_ids,
+            patient_label=patient_label,
+            report_id=report_id,
+        )
+        candidate_reports = sorted({
+            str(chunk.get("metadata", {}).get("report_id", "")).strip()
+            for chunk in scoped_chunks
+            if str(chunk.get("metadata", {}).get("report_id", "")).strip()
+        })
+        explicit_report = _extract_target_report(question, candidate_reports=candidate_reports)
+
     if patient_label and explicit_patient and not (
         _scope_phrase_matches(patient_label, explicit_patient)
         or _scope_phrase_matches(explicit_patient, patient_label)
@@ -931,9 +957,19 @@ def answer_question(
         if decision.status == "INSUFFICIENT":
             expanded_k = k_value * 2
             expanded_chunks = HybridRetriever.search(
-                question, top_k=expanded_k, document_names=document_names,
-                session_id=session_id, document_ids=document_ids, patient_label=target_patient or patient_label,
-                report_id=target_report or report_id,
+                question,
+                top_k=expanded_k,
+                document_names=document_names,
+                session_id=session_id,
+                document_ids=document_ids,
+                # Keep the original UI metadata filters separate from
+                # question-derived text scope. Patient/report labels may exist
+                # only in PDF text or on a cover page, not on every chunk.
+                patient_label=patient_label,
+                report_id=report_id,
+                patient_query=target_patient,
+                report_query=target_report,
+                report_type_query=report_descriptor,
             )
             if len(expanded_chunks) > len(relevant_chunks):
                 retry_decision = evaluate_evidence_sufficiency(

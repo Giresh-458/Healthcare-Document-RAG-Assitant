@@ -185,7 +185,7 @@ with st.sidebar:
     st.markdown("### Chat Context")
     records = list_document_records(st.session_state.session_id)
     docs = list_documents(st.session_state.session_id)
-    labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") != "unspecified"})
+    labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") not in {"unspecified", "mixed"}})
     patient_scope_options = ["No patient selected"] + labels
     selected_patient_scope = st.selectbox("Patient scope", patient_scope_options, index=0)
     patient_label_to_send = None if selected_patient_scope == "No patient selected" else selected_patient_scope
