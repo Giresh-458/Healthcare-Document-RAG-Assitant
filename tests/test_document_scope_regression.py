@@ -1271,3 +1271,57 @@ def test_46_conflicting_report_question_and_selected_report_fails_closed(monkeyp
     assert result["sources"] == []
     assert "SYN-A-001" in result["answer"]
     assert "SYN-A-002" in result["answer"]
+
+
+def test_47_reference_range_query_scans_selected_reports_without_measured_values(monkeypatch):
+    """Reference-range questions list only report-stated intervals across selected uploads."""
+    chunk_a = _make_chunk(
+        "doc-a", "patient_a_labs.pdf", 1,
+        "Patient A\nHemoglobin 13.4 g/dL\nReference interval: 12.0-16.0 g/dL",
+        patient_label="unspecified",
+    )
+    chunk_b = _make_chunk(
+        "doc-b", "patient_b_labs.pdf", 1,
+        "Patient B\nHemoglobin 10.8 g/dL\nReference interval: 12.0-16.0 g/dL",
+        patient_label="unspecified",
+    )
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [chunk_a, chunk_b])
+    monkeypatch.setattr(
+        "app.rag.QueryRouter.classify",
+        lambda *args, **kwargs: pytest.fail("reference-range scan should not use top-K routing"),
+    )
+    monkeypatch.setattr(
+        "app.rag.get_llm",
+        lambda *args, **kwargs: pytest.fail("reference-range scan should be deterministic"),
+    )
+
+    result = answer_question(
+        question="What is the hemoglobin reference range according to uploaded reports?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a", "doc-b"],
+    )
+
+    assert result["route"] == "REFERENCE_RANGE_SCAN"
+    assert "12.0–16.0 g/dL" in result["answer"]
+    assert "13.4" not in result["answer"]
+    assert "10.8" not in result["answer"]
+    assert {source["document_id"] for source in result["sources"]} == {"doc-a", "doc-b"}
+
+
+def test_48_reference_range_scan_does_not_invent_missing_interval(monkeypatch):
+    """If a selected report has no stated interval, do not substitute a general range."""
+    chunk = _make_chunk("doc-a", "patient_a_labs.pdf", 1, "Hemoglobin 13.4 g/dL")
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [chunk])
+
+    result = answer_question(
+        question="What is the hemoglobin reference range according to uploaded reports?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a"],
+    )
+
+    assert result["route"] == "REFERENCE_RANGE_SCAN"
+    assert "No explicit hemoglobin reference range was found" in result["answer"]
+    assert "13.4" not in result["answer"]
+    assert result["sources"] == []
