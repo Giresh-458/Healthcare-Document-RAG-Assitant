@@ -1116,3 +1116,12 @@ def test_40_explicit_report_id_is_applied_before_top_k_retrieval(monkeypatch):
     assert "12.9" in results[0]["text"]
     assert "13.4" not in results[0]["text"]
     mock_collection.query.assert_not_called()
+
+
+def test_41_scope_phrases_match_underscore_separated_upload_filenames():
+    """Patient and report labels remain detectable in normalized upload filenames."""
+    from app.hybrid_retriever import _scope_phrase_matches
+
+    assert _scope_phrase_matches("01_patient_b_low_hemoglobin.pdf", "Patient B")
+    assert _scope_phrase_matches("patient_a_followup_report.pdf", "follow-up")
+    assert _scope_phrase_matches("lab_SYN-A-002.pdf", "SYN-A-002")
