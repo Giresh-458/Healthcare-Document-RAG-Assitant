@@ -1092,3 +1092,27 @@ def test_39_report_id_history_is_inherited_only_for_anaphoric_follow_up():
     ]
     assert _extract_target_report("What is that report's date?", history=history) == "SYN-A-001"
 
+
+
+def test_40_explicit_report_id_is_applied_before_top_k_retrieval(monkeypatch):
+    """An explicit report ID must be isolated before ranking across selected uploads."""
+    from app.hybrid_retriever import HybridRetriever
+
+    report_a = _make_chunk("doc-a", "routine.pdf", 1, "Report SYN-A-001: Hemoglobin 13.4 g/dL")
+    report_b = _make_chunk("doc-b", "followup.pdf", 1, "Report SYN-A-002: Hemoglobin 12.9 g/dL")
+    monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [report_a, report_b])
+    mock_collection = MagicMock()
+    mock_collection.query.return_value = {"ids": [[]]}
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "What is the hemoglobin in report SYN-A-002?",
+        top_k=1,
+        document_ids=["doc-a", "doc-b"],
+        report_query="SYN-A-002",
+    )
+
+    assert [item["id"] for item in results] == ["doc-b"]
+    assert "12.9" in results[0]["text"]
+    assert "13.4" not in results[0]["text"]
+    mock_collection.query.assert_not_called()
