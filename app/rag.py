@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, Optional, List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from app.hybrid_retriever import HybridRetriever
+from app.hybrid_retriever import HybridRetriever, filter_patient_chunks
 from app.metrics import RagMetrics
 from app.query_router import QueryRouter
 from app.config import TOP_K
@@ -560,17 +560,10 @@ def answer_question(
             "structured_data": {"confidence": "low", "medical_entities": [test_display] if clinical_test else [], "requires_doctor_review": True},
         }
 
-    # Filter chunks for patient-specific query
+    # Apply the same upload-aware patient filter after retrieval as a defense-in-depth
+    # check. It retains unlabelled pages when the upload contains only one patient.
     if target_patient:
-        filtered_chunks = []
-        for c in relevant_chunks:
-            m = c.get("metadata", {})
-            p_lbl = m.get("patient_label", "")
-            txt = c.get("text", "")
-            if p_lbl and p_lbl.lower() == target_patient.lower():
-                filtered_chunks.append(c)
-            elif re.search(rf"\b{re.escape(target_patient)}\b", txt, re.I):
-                filtered_chunks.append(c)
+        filtered_chunks = filter_patient_chunks(relevant_chunks, target_patient)
         if not filtered_chunks:
             return {
                 "answer": f"Based on the available healthcare documents in your selected scope, no records were found for {target_patient}.",
