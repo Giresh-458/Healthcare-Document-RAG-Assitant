@@ -432,8 +432,8 @@ def _all_reference_range_candidates(
         }
 
     aliases = {
-        "hemoglobin": r"\\b(?:hemoglobin|haemoglobin|hgb|hb)\\b",
-        "hba1c": r"(?:hba1c|hemoglobin\s+a1c)",
+        "hemoglobin": r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b",
+        "hba1c": r"\b(?:hba1c|hemoglobin\s+a1c)\b",
     }
     test_pattern = aliases.get(clinical_test, rf"\b{re.escape(clinical_test)}\b")
     range_pattern = re.compile(
