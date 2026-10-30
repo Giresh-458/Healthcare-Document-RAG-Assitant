@@ -192,6 +192,7 @@ class HybridRetriever:
         report_id: Optional[str] = None,
         patient_query: Optional[str] = None,
         report_query: Optional[str] = None,
+        report_type_query: Optional[str] = None,
     ) -> List[Dict]:
         if not question or not question.strip() or top_k <= 0:
             return []
@@ -248,6 +249,23 @@ class HybridRetriever:
                     or _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
                 )
             ]
+        if report_type_query:
+            matching_document_keys = {
+                chunk.get("metadata", {}).get("document_id")
+                or chunk.get("metadata", {}).get("document_name")
+                or chunk.get("id")
+                for chunk in chunks
+                if _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), report_type_query)
+                or _scope_phrase_matches(chunk.get("text", ""), report_type_query)
+            }
+            chunks = [
+                chunk for chunk in chunks
+                if (
+                    chunk.get("metadata", {}).get("document_id")
+                    or chunk.get("metadata", {}).get("document_name")
+                    or chunk.get("id")
+                ) in matching_document_keys
+            ]
         if not chunks:
             return []
 
@@ -264,7 +282,7 @@ class HybridRetriever:
             not report_query
             or all(str(c.get("metadata", {}).get("report_id", "")).casefold() == report_query.casefold() for c in chunks)
         )
-        dense_filterable = patient_metadata_only and report_metadata_only
+        dense_filterable = patient_metadata_only and report_metadata_only and not report_type_query
         where = _where_clause(
             document_names, session_id, document_ids,
             patient_label or (patient_query if patient_metadata_only and patient_query else None),
@@ -275,7 +293,7 @@ class HybridRetriever:
             return re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.lower())
 
         # Cache key partitioned strictly by normalized document selection and chunk IDs
-        scope_prefix = f"{session_id}|{','.join(sorted(document_ids or []))}|{','.join(sorted(document_names or []))}|{patient_label or ''}|{report_id or ''}|{patient_query or ''}|{report_query or ''}"
+        scope_prefix = f"{session_id}|{','.join(sorted(document_ids or []))}|{','.join(sorted(document_names or []))}|{patient_label or ''}|{report_id or ''}|{patient_query or ''}|{report_query or ''}|{report_type_query or ''}"
         fingerprint_source = scope_prefix + "\n" + "\n".join(f"{chunk['id']}\0{chunk['text']}" for chunk in chunks)
         fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
         with _BM25_LOCK:
