@@ -1384,3 +1384,132 @@ def test_51_report_comparison_does_not_collapse_to_one_report_type():
     assert _extract_report_descriptor(
         "Compare Patient A's routine and follow-up hemoglobin reports"
     ) is None
+
+
+def test_bare_report_identifier_is_resolved_from_selected_upload_metadata(monkeypatch):
+    """A report ID in the question is recognized even without the word 'report'."""
+    cover = _make_chunk(
+        "doc-syn-a-004",
+        "patient_a_labs.pdf",
+        1,
+        "Report ID: SYN-A-004",
+        patient_label="unspecified",
+        report_id="SYN-A-004",
+    )
+    result_page = _make_chunk(
+        "doc-syn-a-004",
+        "patient_a_labs.pdf",
+        2,
+        "Hemoglobin 11.2 g/dL",
+        patient_label="unspecified",
+    )
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.get_all_chunks",
+        lambda **kwargs: [cover, result_page],
+    )
+    captured = {}
+    mock_chat = MagicMock()
+    mock_chat.with_structured_output.return_value.invoke.return_value = MedicalAnswer(
+        answer="The report records hemoglobin at 11.2 g/dL.",
+        confidence="high",
+        medical_entities=["hemoglobin"],
+        requires_doctor_review=True,
+    )
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+
+    def mock_search(question, **kwargs):
+        captured.update(kwargs)
+        return [result_page]
+
+    monkeypatch.setattr("app.rag.HybridRetriever.search", mock_search)
+
+    result = answer_question(
+        question="What is the hemoglobin result for SYN-A-004?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-syn-a-004"],
+    )
+
+    assert captured["report_query"] == "SYN-A-004"
+    assert "11.2 g/dL" in result["answer"]
+    assert [source["document_id"] for source in result["sources"]] == ["doc-syn-a-004"]
+
+
+def test_system1_expanded_retry_preserves_patient_and_report_type_scope(monkeypatch):
+    """System 1 retry must retain text-derived patient and report-type filters."""
+    first_page = _make_chunk(
+        "doc-followup",
+        "patient_a_followup_report.pdf",
+        2,
+        "Hemoglobin 12.9 g/dL",
+        patient_label="unspecified",
+    )
+    second_page = _make_chunk(
+        "doc-followup",
+        "patient_a_followup_report.pdf",
+        3,
+        "Follow-up laboratory result confirmed.",
+        patient_label="unspecified",
+    )
+    search_calls = []
+    mock_chat = MagicMock()
+    mock_chat.with_structured_output.return_value.invoke.return_value = MedicalAnswer(
+        answer="Patient A's follow-up hemoglobin is 12.9 g/dL.",
+        confidence="high",
+        medical_entities=["hemoglobin"],
+        requires_doctor_review=True,
+    )
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+
+    def mock_search(question, **kwargs):
+        search_calls.append(kwargs)
+        return [first_page] if len(search_calls) == 1 else [first_page, second_page]
+
+    monkeypatch.setattr("app.rag.HybridRetriever.search", mock_search)
+
+    class FakeDecision:
+        def __init__(self, status):
+            self.status = status
+            self.error_message = None
+            self.retry_performed = False
+
+        def to_dict(self):
+            return {"status": self.status, "retry_performed": self.retry_performed}
+
+    decisions = [FakeDecision("INSUFFICIENT"), FakeDecision("SUFFICIENT")]
+
+    def evaluate(*args, **kwargs):
+        return decisions.pop(0)
+
+    monkeypatch.setattr("app.rag.evaluate_evidence_sufficiency", evaluate)
+
+    result = answer_question(
+        question="What is Patient A's follow-up hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-followup"],
+        system1_enabled=True,
+        system1_provider="codiv",
+        system1_api_key="codiv-test-key",
+    )
+
+    assert len(search_calls) == 2
+    retry_scope = search_calls[1]
+    assert retry_scope["patient_label"] is None
+    assert retry_scope["report_id"] is None
+    assert retry_scope["patient_query"] == "Patient A"
+    assert retry_scope["report_query"] is None
+    assert retry_scope["report_type_query"] == "follow-up"
+    assert "12.9 g/dL" in result["answer"]
+    assert result["metrics"]["system1_decision"]["status"] == "SUFFICIENT"
+
+
+def test_report_id_candidate_detection_does_not_treat_dates_or_single_hyphen_codes_as_report_ids():
+    """Unlabelled ID lookup is only triggered for candidate tokens and still validates against corpus metadata."""
+    from app.rag import _contains_report_id_candidate
+
+    assert _contains_report_id_candidate("What is the result for SYN-A-004?")
+    assert not _contains_report_id_candidate("What is the result from 2026-09-12?")
+    assert not _contains_report_id_candidate("What is the COVID-19 result?")
