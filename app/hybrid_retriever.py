@@ -119,6 +119,8 @@ class HybridRetriever:
         document_ids: Optional[List[str]] = None,
         patient_label: Optional[str] = None,
         report_id: Optional[str] = None,
+        patient_query: Optional[str] = None,
+        report_query: Optional[str] = None,
     ) -> List[Dict]:
         if not question or not question.strip() or top_k <= 0:
             return []
@@ -141,14 +143,52 @@ class HybridRetriever:
         if not chunks:
             return []
 
+        # Apply question-derived scope to the complete selected corpus BEFORE
+        # BM25/dense top-K ranking. Patient/report mentions may live in PDF text
+        # or filenames even when upload metadata is absent.
+        if patient_query:
+            chunks = [
+                chunk for chunk in chunks
+                if _scope_phrase_matches(chunk.get("metadata", {}).get("patient_label", ""), patient_query)
+                or _scope_phrase_matches(chunk.get("text", ""), patient_query)
+                or _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), patient_query)
+            ]
+        if report_query:
+            chunks = [
+                chunk for chunk in chunks
+                if _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
+                or _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), report_query)
+                or _scope_phrase_matches(chunk.get("metadata", {}).get("document_id", ""), report_query)
+                or _scope_phrase_matches(chunk.get("text", ""), report_query)
+            ]
+        if not chunks:
+            return []
+
         candidate_k = min(max(top_k, candidate_k or top_k * 4), len(chunks))
-        where = _where_clause(document_names, session_id, document_ids, patient_label, report_id)
+        # Vector-store metadata filtering is safe only when every retained chunk
+        # carries the exact matching metadata value. For text-only scope, rely on
+        # BM25 over the already-filtered corpus instead of mixing other patients'
+        # dense candidates into the ranking.
+        patient_metadata_only = (
+            not patient_query
+            or all(str(c.get("metadata", {}).get("patient_label", "")).casefold() == patient_query.casefold() for c in chunks)
+        )
+        report_metadata_only = (
+            not report_query
+            or all(str(c.get("metadata", {}).get("report_id", "")).casefold() == report_query.casefold() for c in chunks)
+        )
+        dense_filterable = patient_metadata_only and report_metadata_only
+        where = _where_clause(
+            document_names, session_id, document_ids,
+            patient_label or (patient_query if patient_metadata_only and patient_query else None),
+            report_id or (report_query if report_metadata_only and report_query else None),
+        )
 
         def tokenize(value):
             return re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.lower())
 
         # Cache key partitioned strictly by normalized document selection and chunk IDs
-        scope_prefix = f"{session_id}|{','.join(sorted(document_ids or []))}|{','.join(sorted(document_names or []))}|{patient_label or ''}|{report_id or ''}"
+        scope_prefix = f"{session_id}|{','.join(sorted(document_ids or []))}|{','.join(sorted(document_names or []))}|{patient_label or ''}|{report_id or ''}|{patient_query or ''}|{report_query or ''}"
         fingerprint_source = scope_prefix + "\n" + "\n".join(f"{chunk['id']}\0{chunk['text']}" for chunk in chunks)
         fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
         with _BM25_LOCK:
@@ -170,13 +210,15 @@ class HybridRetriever:
         bm25_indices = sorted(range(len(chunks)), key=lambda i: bm25_scores[i], reverse=True)[:candidate_k]
 
         embeddings = get_embeddings_model()
-        dense_results = collection.query(
-            query_embeddings=[embeddings.embed_query(question)],
-            n_results=candidate_k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-        dense_ids = (dense_results.get("ids") or [[]])[0]
+        dense_ids = []
+        if dense_filterable:
+            dense_results = collection.query(
+                query_embeddings=[embeddings.embed_query(question)],
+                n_results=candidate_k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+            dense_ids = (dense_results.get("ids") or [[]])[0]
         dense_ranks = {doc_id: rank for rank, doc_id in enumerate(dense_ids)}
         fused_scores = {}
         chunks_by_id = {chunk["id"]: chunk for chunk in chunks}
