@@ -581,20 +581,31 @@ def answer_question(
             }
         relevant_chunks = filtered_chunks
 
-    # Filter chunks for report-specific query
+    # Filter by report identity at the upload level. Report IDs are extracted
+    # per page, so a matching cover page must not cause the result page to vanish.
     if target_report:
-        filtered_chunks = []
-        for c in relevant_chunks:
-            m = c.get("metadata", {})
-            r_id = m.get("report_id", "")
-            doc_id = m.get("document_id", "")
-            doc_name = m.get("document_name", "")
-            txt = c.get("text", "")
-            if (r_id and r_id.lower() == target_report.lower()) or \
-               (target_report.lower() in doc_name.lower()) or \
-               (target_report.lower() in doc_id.lower()) or \
-               (re.search(rf"\b{re.escape(target_report)}\b", txt, re.I)):
-                filtered_chunks.append(c)
+        matching_document_keys = {
+            c.get("metadata", {}).get("document_id")
+            or c.get("metadata", {}).get("document_name")
+            or c.get("id")
+            for c in relevant_chunks
+            if _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), target_report)
+            or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), target_report)
+            or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), target_report)
+            or _scope_phrase_matches(c.get("text", ""), target_report)
+        }
+        filtered_chunks = [
+            c for c in relevant_chunks
+            if (
+                c.get("metadata", {}).get("document_id")
+                or c.get("metadata", {}).get("document_name")
+                or c.get("id")
+            ) in matching_document_keys
+            and (
+                not c.get("metadata", {}).get("report_id")
+                or _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), target_report)
+            )
+        ]
         if not filtered_chunks:
             return {
                 "answer": f"Based on the available healthcare documents in your selected scope, report {target_report} was not found.",
@@ -606,12 +617,24 @@ def answer_question(
         relevant_chunks = filtered_chunks
 
     # Plain-language report types (e.g. follow-up vs routine) are also scope
-    # constraints. Apply them before generation, not just as retrieval hints.
+    # constraints. Apply them at the upload level because the descriptor may
+    # appear only in a report heading on the first page.
     if report_descriptor and not target_report:
-        filtered_chunks = [
-            c for c in relevant_chunks
+        matching_document_keys = {
+            c.get("metadata", {}).get("document_id")
+            or c.get("metadata", {}).get("document_name")
+            or c.get("id")
+            for c in relevant_chunks
             if _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), report_descriptor)
             or _scope_phrase_matches(c.get("text", ""), report_descriptor)
+        }
+        filtered_chunks = [
+            c for c in relevant_chunks
+            if (
+                c.get("metadata", {}).get("document_id")
+                or c.get("metadata", {}).get("document_name")
+                or c.get("id")
+            ) in matching_document_keys
         ]
         if not filtered_chunks:
             return {
