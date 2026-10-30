@@ -1125,3 +1125,71 @@ def test_41_scope_phrases_match_underscore_separated_upload_filenames():
     assert _scope_phrase_matches("01_patient_b_low_hemoglobin.pdf", "Patient B")
     assert _scope_phrase_matches("patient_a_followup_report.pdf", "follow-up")
     assert _scope_phrase_matches("lab_SYN-A-002.pdf", "SYN-A-002")
+
+
+def test_42_report_id_on_cover_page_keeps_value_page_in_answer_context(monkeypatch):
+    """A report ID on page one must retain later pages from the same upload."""
+    cover = _make_chunk("doc-report", "lab.pdf", 1, "Report SYN-A-002")
+    result_page = _make_chunk("doc-report", "lab.pdf", 2, "Hemoglobin 12.9 g/dL")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="The report records hemoglobin at 12.9 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [cover, result_page])
+
+    result = answer_question(
+        question="What is the hemoglobin in report SYN-A-002?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-report"],
+    )
+
+    assert "12.9 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [1, 2]
+
+
+def test_43_followup_heading_on_cover_page_keeps_later_result_page(monkeypatch):
+    """A follow-up descriptor on the cover page must retain the report's result page."""
+    cover = _make_chunk("doc-followup", "patient_a_lab.pdf", 1, "Patient A follow-up report", patient_label="Patient A")
+    result_page = _make_chunk("doc-followup", "patient_a_lab.pdf", 2, "Hemoglobin 12.9 g/dL", patient_label="Patient A")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="Patient A's follow-up hemoglobin is 12.9 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [cover, result_page])
+
+    result = answer_question(
+        question="What is Patient A's follow-up hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-followup"],
+    )
+
+    assert "12.9 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [1, 2]
