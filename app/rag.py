@@ -443,16 +443,27 @@ def _all_reference_range_candidates(
         re.I,
     )
     rows, matching_chunks, seen = [], [], set()
+    page_groups = {}
     for chunk in chunks:
-        text = str(chunk.get("text", "") or "")
+        metadata = chunk.get("metadata", {})
+        page_key = (
+            metadata.get("document_id") or metadata.get("document_name"),
+            metadata.get("page"),
+        )
+        page_groups.setdefault(page_key, []).append(chunk)
+
+    # Reassemble chunks from the same PDF page so a split between the test name
+    # and its reference interval does not hide evidence.
+    for page_chunks in page_groups.values():
+        metadata = page_chunks[0].get("metadata", {})
+        text = "\n".join(str(chunk.get("text", "") or "") for chunk in page_chunks)
         lines = text.splitlines() or [text]
-        matched_chunk = False
+        matched_page = False
         for line_index, line in enumerate(lines):
             context = " ".join(lines[max(0, line_index - 1):min(len(lines), line_index + 2)])
             if not re.search(test_pattern, context, re.I):
                 continue
             for match in range_pattern.finditer(line):
-                metadata = chunk.get("metadata", {})
                 low, high = match.group(1), match.group(2)
                 unit = re.sub(r"\s+", "", match.group(3) or "") or "unit not stated"
                 key = (metadata.get("document_id"), metadata.get("page"), low, high, unit.casefold())
@@ -469,9 +480,9 @@ def _all_reference_range_candidates(
                     "report_id": metadata.get("report_id", ""),
                     "report_date": metadata.get("report_date", ""),
                 })
-                matched_chunk = True
-        if matched_chunk:
-            matching_chunks.append(chunk)
+                matched_page = True
+        if matched_page:
+            matching_chunks.extend(page_chunks)
 
     system1_decision_dict = None
     if system1_enabled and matching_chunks:
