@@ -1193,3 +1193,37 @@ def test_43_followup_heading_on_cover_page_keeps_later_result_page(monkeypatch):
 
     assert "12.9 g/dL" in captured_context
     assert [source["page"] for source in result["sources"]] == [1, 2]
+
+
+def test_44_patient_name_on_cover_page_keeps_later_lab_result_page(monkeypatch):
+    """A single-patient upload retains later pages even if only its cover names the patient."""
+    cover = _make_chunk("doc-patient", "lab.pdf", 1, "Patient A clinical laboratory report")
+    result_page = _make_chunk("doc-patient", "lab.pdf", 2, "Hemoglobin 13.4 g/dL")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="Patient A's hemoglobin is 13.4 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [cover, result_page])
+
+    result = answer_question(
+        question="What is Patient A's hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-patient"],
+    )
+
+    assert "13.4 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [1, 2]
