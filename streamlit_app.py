@@ -374,7 +374,7 @@ with st.sidebar:
         docs_payload = docs_response.json() if docs_response.status_code == 200 else {}
         records = docs_payload.get("records", [])
         docs = docs_payload.get("documents", [])
-        labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") != "unspecified"})
+        labels = sorted({r.get("patient_label", "unspecified") for r in records if r.get("patient_label") not in {"unspecified", "mixed"}})
         patient_scope_options = ["No patient selected"] + labels
         selected_patient_scope = st.selectbox("Patient scope", patient_scope_options, index=0)
         patient_label_to_send = None if selected_patient_scope == "No patient selected" else selected_patient_scope
