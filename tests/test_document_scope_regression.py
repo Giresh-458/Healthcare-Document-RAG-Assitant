@@ -1698,3 +1698,34 @@ def test_document_records_infer_patient_labels_for_existing_indexed_uploads(monk
     labels = {record["document_id"]: record["patient_label"] for record in records}
 
     assert labels == {"doc-a": "Patient A", "doc-mixed": "mixed"}
+
+
+def test_selected_patient_scope_with_legacy_metadata_uses_filtered_bm25_not_empty_dense_filter(monkeypatch):
+    """Legacy unspecified patient metadata must not cause a false-empty dense-only scope."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunks = [
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 1, "Patient A"),
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 2, "Hemoglobin 13.4 g/dL"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 1, "Patient B"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 2, "Hemoglobin 10.8 g/dL"),
+    ]
+    mock_collection = MagicMock()
+    mock_collection.get.return_value = {
+        "ids": [chunk["id"] for chunk in chunks],
+        "documents": [chunk["text"] for chunk in chunks],
+        "metadatas": [chunk["metadata"] for chunk in chunks],
+    }
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "hemoglobin",
+        top_k=4,
+        session_id="qa-session",
+        document_ids=["doc-a", "doc-b"],
+        patient_label="Patient B",
+    )
+
+    assert results
+    assert {chunk["metadata"]["document_id"] for chunk in results} == {"doc-b"}
+    mock_collection.query.assert_not_called()
