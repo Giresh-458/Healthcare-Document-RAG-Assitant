@@ -627,6 +627,9 @@ def answer_question(
 
     asks_all = _is_multi_record_query(question)
     asks_hemoglobin = bool(re.search(r"\b(hemoglobin|haemoglobin|hgb|hb)\b", question, re.I))
+    asks_reference_range = bool(
+        re.search(r"\b(reference\s+(?:range|interval)|ref\.?\s*range|normal\s+range)\b", question, re.I)
+    )
     # Resolve explicit question scope before considering UI or conversation scope.
     explicit_patient = _extract_target_patient(question)
     explicit_report = _extract_target_report(question)
@@ -662,7 +665,7 @@ def answer_question(
     report_descriptor = _extract_report_descriptor(question)
 
     # Explicit all-record hemoglobin questions use a full-corpus scan across selected documents.
-    if asks_all and asks_hemoglobin:
+    if asks_all and asks_hemoglobin and not asks_reference_range:
         chunks = HybridRetriever.get_all_chunks(
             document_names=document_names, session_id=session_id,
             document_ids=document_ids, patient_label=patient_label,
@@ -688,9 +691,6 @@ def answer_question(
             system1_endpoint=system1_endpoint,
         )
 
-    asks_reference_range = bool(
-        re.search(r"\b(reference\s+(?:range|interval)|ref\.?\s*range|normal\s+range)\b", question, re.I)
-    )
     if asks_reference_range:
         # Reference intervals are report facts, not measured patient results.
         # Scan the selected corpus so a top-K cutoff cannot hide a report's range.
