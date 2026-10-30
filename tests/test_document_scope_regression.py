@@ -1377,3 +1377,12 @@ def test_50_top_k_result_page_without_cover_labels_is_not_dropped(monkeypatch):
 
     assert "12.9 g/dL" in captured_context
     assert [source["page"] for source in result["sources"]] == [2]
+
+
+def test_51_report_comparison_does_not_collapse_to_one_report_type():
+    """A question comparing routine and follow-up reports must keep both types in scope."""
+    from app.rag import _extract_report_descriptor
+
+    assert _extract_report_descriptor(
+        "Compare Patient A's routine and follow-up hemoglobin reports"
+    ) is None
