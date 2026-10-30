@@ -165,12 +165,30 @@ class HybridRetriever:
                 or _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), patient_query)
             ]
         if report_query:
-            chunks = [
-                chunk for chunk in chunks
+            # Report IDs are extracted per PDF page. Resolve the owning upload
+            # from any matching page, then retain the other pages from that same
+            # report unless they carry a conflicting, explicit report ID.
+            matching_document_keys = {
+                chunk.get("metadata", {}).get("document_id")
+                or chunk.get("metadata", {}).get("document_name")
+                or chunk.get("id")
+                for chunk in chunks
                 if _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
                 or _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), report_query)
                 or _scope_phrase_matches(chunk.get("metadata", {}).get("document_id", ""), report_query)
                 or _scope_phrase_matches(chunk.get("text", ""), report_query)
+            }
+            chunks = [
+                chunk for chunk in chunks
+                if (
+                    chunk.get("metadata", {}).get("document_id")
+                    or chunk.get("metadata", {}).get("document_name")
+                    or chunk.get("id")
+                ) in matching_document_keys
+                and (
+                    not chunk.get("metadata", {}).get("report_id")
+                    or _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
+                )
             ]
         if not chunks:
             return []
