@@ -1039,8 +1039,8 @@ def test_36_report_descriptor_is_applied_before_top_k_retrieval(monkeypatch):
     """A follow-up report must not be displaced by a higher-scoring routine report."""
     from app.hybrid_retriever import HybridRetriever
 
-    routine = _make_chunk("doc-r", "patient_a_routine_report.pdf", 1, "Patient A routine hemoglobin 13.4 g/dL")
-    followup = _make_chunk("doc-f", "patient_a_followup_report.pdf", 1, "Patient A follow-up hemoglobin 12.9 g/dL")
+    routine = _make_chunk("doc-r", "patient_a_routine_report.pdf", 1, "Patient A routine hemoglobin 13.4 g/dL", report_id="SYN-A-001")
+    followup = _make_chunk("doc-f", "patient_a_followup_report.pdf", 1, "Patient A follow-up hemoglobin 12.9 g/dL", report_id="SYN-A-002")
     monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [routine, followup])
     mock_collection = MagicMock()
     mock_collection.query.return_value = {"ids": [[]]}
