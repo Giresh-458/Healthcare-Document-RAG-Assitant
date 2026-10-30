@@ -45,6 +45,17 @@ def _where_clause(
     return clauses[0] if len(clauses) == 1 else {"$and": clauses}
 
 
+def _scope_phrase_matches(value: str, phrase: str) -> bool:
+    """Match a scope phrase across spaces, underscores, or hyphens."""
+    if not value or not phrase:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9]+", phrase)
+    if not tokens:
+        return False
+    pattern = r"(?<!\\w)" + r"[\\s_-]*".join(re.escape(token) for token in tokens) + r"(?!\\w)"
+    return bool(re.search(pattern, str(value), re.I))
+
+
 class HybridRetriever:
     """Combine BM25 and dense ranks without comparing their raw scores."""
 
