@@ -222,7 +222,9 @@ class HybridRetriever:
         if report_query:
             # Report IDs are extracted per PDF page. Resolve the owning upload
             # from any matching page, then retain the other pages from that same
-            # report unless they carry a conflicting, explicit report ID.
+            # report unless an exact report-ID query encounters a conflicting ID.
+            report_descriptors = {"follow-up", "routine", "baseline", "initial", "discharge", "admission"}
+            strict_report_id = report_query.casefold() not in report_descriptors
             matching_document_keys = {
                 chunk.get("metadata", {}).get("document_id")
                 or chunk.get("metadata", {}).get("document_name")
@@ -241,7 +243,8 @@ class HybridRetriever:
                     or chunk.get("id")
                 ) in matching_document_keys
                 and (
-                    not chunk.get("metadata", {}).get("report_id")
+                    not strict_report_id
+                    or not chunk.get("metadata", {}).get("report_id")
                     or _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
                 )
             ]
