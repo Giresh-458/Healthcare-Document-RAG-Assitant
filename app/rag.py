@@ -79,9 +79,20 @@ def _extract_target_patient(
     if match:
         return match.group(1).strip()
 
-    if history:
-        for msg in reversed(history[-4:]):
+    # Only inherit patient scope from prior USER turns. Assistant-generated citations
+    # and summaries are evidence, not instructions for silently scoping a new query.
+    # Broad/reference-range questions must remain broad rather than inheriting a stale patient.
+    broad_question = (
+        _is_multi_record_query(question)
+        or bool(re.search(r"\b(reference\s+(?:range|interval)|uploaded\s+(?:reports|documents)|all\s+(?:reports|documents))\b", question, re.I))
+    )
+    if history and not broad_question:
+        for msg in reversed(history[-6:]):
+            if msg.get("role") != "user":
+                continue
             content = msg.get("content", "")
+            if not content or content.strip() == question.strip():
+                continue
             if candidate_patients:
                 for p in candidate_patients:
                     if p and p != "unspecified" and re.search(rf"\b{re.escape(p)}\b", content, re.I):
@@ -114,9 +125,17 @@ def _extract_target_report(
         if val.lower() not in stop_words and (any(c.isdigit() for c in val) or (candidate_reports and val in candidate_reports)):
             return val
 
-    if history:
-        for msg in reversed(history[-4:]):
+    # A report ID from history is inherited only for an explicit anaphoric
+    # follow-up (e.g. "that report" / "its date"). Never inherit IDs from
+    # assistant citations or unrelated earlier user questions.
+    refers_to_prior_report = bool(re.search(r"\b(that|same|this|its|there|those|previous)\b", question, re.I))
+    if history and refers_to_prior_report:
+        for msg in reversed(history[-6:]):
+            if msg.get("role") != "user":
+                continue
             content = msg.get("content", "")
+            if not content or content.strip() == question.strip():
+                continue
             if candidate_reports:
                 for r in candidate_reports:
                     if r and re.search(rf"\b{re.escape(r)}\b", content, re.I):
@@ -128,6 +147,33 @@ def _extract_target_report(
                     return val
 
     return None
+
+
+def _extract_report_descriptor(question: str) -> Optional[str]:
+    """Extract a plain-language report type such as 'follow-up' or 'routine'."""
+    descriptors = (
+        ("follow-up", r"\bfollow[\s_-]?up\b"),
+        ("routine", r"\broutine\b"),
+        ("baseline", r"\bbaseline\b"),
+        ("initial", r"\binitial\b"),
+        ("discharge", r"\bdischarge\b"),
+        ("admission", r"\badmission\b"),
+    )
+    for label, pattern in descriptors:
+        if re.search(pattern, question, re.I):
+            return label
+    return None
+
+
+def _scope_phrase_matches(value: str, phrase: str) -> bool:
+    """Match a scope phrase across spaces, underscores, or hyphens."""
+    if not value or not phrase:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9]+", phrase)
+    if not tokens:
+        return False
+    pattern = r"(?<!\w)" + r"[\s_-]*".join(re.escape(token) for token in tokens) + r"(?!\w)"
+    return bool(re.search(pattern, str(value), re.I))
 
 
 def _parse_date_to_key(date_str: str) -> str:
@@ -392,6 +438,11 @@ def answer_question(
 
     asks_all = _is_multi_record_query(question)
     asks_hemoglobin = bool(re.search(r"\b(hemoglobin|haemoglobin|hgb|hb)\b", question, re.I))
+    # Resolve explicit patient/report scope BEFORE top-K retrieval. Resolving it
+    # afterwards can discard the intended patient's report before filtering begins.
+    target_patient = patient_label or _extract_target_patient(question, conversation_history)
+    target_report = report_id or _extract_target_report(question, conversation_history)
+    report_descriptor = _extract_report_descriptor(question)
 
     # Explicit all-record hemoglobin questions use a full-corpus scan across selected documents.
     if asks_all and asks_hemoglobin:
@@ -435,6 +486,7 @@ def answer_question(
     relevant_chunks = HybridRetriever.search(
         question, top_k=k_value, document_names=document_names, session_id=session_id,
         document_ids=document_ids, patient_label=patient_label, report_id=report_id,
+        patient_query=target_patient, report_query=target_report or report_descriptor,
     )
     if not relevant_chunks:
         return {
@@ -460,8 +512,8 @@ def answer_question(
         if c.get("metadata", {}).get("report_id")
     })
 
-    target_patient = patient_label or _extract_target_patient(question, conversation_history, candidate_patients)
-    target_report = report_id or _extract_target_report(question, conversation_history, candidate_reports)
+    target_patient = target_patient or _extract_target_patient(question, conversation_history, candidate_patients)
+    target_report = target_report or _extract_target_report(question, conversation_history, candidate_reports)
     clinical_test = _extract_clinical_test(question)
     is_latest_query = bool(re.search(r"\b(latest|most recent|newest)\b", question, re.I))
 
@@ -546,6 +598,24 @@ def answer_question(
         if not filtered_chunks:
             return {
                 "answer": f"Based on the available healthcare documents in your selected scope, report {target_report} was not found.",
+                "sources": [],
+                "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                "route": route,
+                "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+            }
+        relevant_chunks = filtered_chunks
+
+    # Plain-language report types (e.g. follow-up vs routine) are also scope
+    # constraints. Apply them before generation, not just as retrieval hints.
+    if report_descriptor and not target_report:
+        filtered_chunks = [
+            c for c in relevant_chunks
+            if _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), report_descriptor)
+            or _scope_phrase_matches(c.get("text", ""), report_descriptor)
+        ]
+        if not filtered_chunks:
+            return {
+                "answer": f"No {report_descriptor} report was found in the selected patient/document scope.",
                 "sources": [],
                 "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
                 "route": route,
