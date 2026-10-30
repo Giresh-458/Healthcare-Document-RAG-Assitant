@@ -135,10 +135,12 @@ def delete_document(document_name: str, session_id: str = "global", document_id:
 
 
 def list_document_records(session_id: str = "global") -> List[Dict]:
-    """Return one record per uploaded document, including legacy indexed records."""
-    results = collection.get(where={"session_id": session_id}, include=["metadatas"])
+    """Return one record per upload, deriving safe labels for legacy indexed chunks."""
+    results = collection.get(where={"session_id": session_id}, include=["metadatas", "documents"])
     records = {}
-    for metadata in (results.get("metadatas") or []):
+    metadatas = results.get("metadatas") or []
+    documents = results.get("documents") or []
+    for metadata, text in zip(metadatas, documents):
         if not metadata or not metadata.get("document_name"):
             continue
         # Legacy chunks did not have document_id; keep them visible as a legacy record.
@@ -152,12 +154,30 @@ def list_document_records(session_id: str = "global") -> List[Dict]:
                 "session_id": metadata.get("session_id", session_id),
                 "report_id": metadata.get("report_id") or "",
                 "report_date": metadata.get("report_date") or "",
+                "_texts": [str(text or "")],
             }
         else:
+            rec["_texts"].append(str(text or ""))
             if not rec.get("report_id") and metadata.get("report_id"):
                 rec["report_id"] = metadata["report_id"]
             if not rec.get("report_date") and metadata.get("report_date"):
                 rec["report_date"] = metadata["report_date"]
+
+    for record in records.values():
+        stored_label = record.get("patient_label") or "unspecified"
+        inferred_label = _infer_patient_label(
+            [{"text": text} for text in record.pop("_texts", [])],
+            record["document_name"],
+        )
+        if inferred_label == "mixed" or (
+            stored_label != "unspecified"
+            and inferred_label != "unspecified"
+            and stored_label.casefold() != inferred_label.casefold()
+        ):
+            record["patient_label"] = "mixed"
+        elif stored_label == "unspecified":
+            record["patient_label"] = inferred_label
+
     return sorted(records.values(), key=lambda item: (item["document_name"].casefold(), item["document_id"]))
 
 
