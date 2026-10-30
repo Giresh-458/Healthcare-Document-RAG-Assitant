@@ -823,80 +823,78 @@ def answer_question(
     # check. It retains unlabelled pages when the upload contains only one patient.
     if target_patient:
         filtered_chunks = filter_patient_chunks(relevant_chunks, target_patient)
-        if not filtered_chunks:
-            return {
-                "answer": f"Based on the available healthcare documents in your selected scope, no records were found for {target_patient}.",
-                "sources": [],
-                "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
-                "route": route,
-                "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
-            }
-        relevant_chunks = filtered_chunks
-
-    # Filter by report identity at the upload level. Report IDs are extracted
-    # per page, so a matching cover page must not cause the result page to vanish.
-    if target_report:
-        matching_document_keys = {
-            c.get("metadata", {}).get("document_id")
-            or c.get("metadata", {}).get("document_name")
-            or c.get("id")
-            for c in relevant_chunks
-            if _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), target_report)
-            or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), target_report)
-            or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), target_report)
-            or _scope_phrase_matches(c.get("text", ""), target_report)
-        }
-        filtered_chunks = [
-            c for c in relevant_chunks
-            if (
-                c.get("metadata", {}).get("document_id")
-                or c.get("metadata", {}).get("document_name")
-                or c.get("id")
-            ) in matching_document_keys
-            and (
-                not c.get("metadata", {}).get("report_id")
-                or _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), target_report)
+        if filtered_chunks:
+            relevant_chunks = filtered_chunks
+        else:
+            # The full-corpus retriever has already applied patient scope. A top-K
+            # result page may omit the patient name that appeared only on the cover.
+            has_patient_identity = any(
+                (
+                    c.get("metadata", {}).get("patient_label")
+                    and c.get("metadata", {}).get("patient_label", "").casefold() != "unspecified"
+                )
+                or re.search(r"\bPatient[\s_-]+[A-Za-z0-9_-]+\b", c.get("text", ""), re.I)
+                or re.search(r"\b(?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+", c.get("text", ""), re.I)
+                or re.search(r"\bpatient[_-][a-z0-9]+\b", c.get("metadata", {}).get("document_name", ""), re.I)
+                for c in relevant_chunks
             )
-        ]
-        if not filtered_chunks:
-            return {
-                "answer": f"Based on the available healthcare documents in your selected scope, report {target_report} was not found.",
-                "sources": [],
-                "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
-                "route": route,
-                "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
-            }
-        relevant_chunks = filtered_chunks
+            if has_patient_identity:
+                return {
+                    "answer": f"Based on the available healthcare documents in your selected scope, no records were found for {target_patient}.",
+                    "sources": [],
+                    "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                    "route": route,
+                    "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+                }
 
-    # Plain-language report types (e.g. follow-up vs routine) are also scope
-    # constraints. Apply them at the upload level because the descriptor may
-    # appear only in a report heading on the first page.
+    # Apply report ID scope to retrieved chunks when the ID is visible in top-K.
+    # If top-K contains no report identity at all, trust the pre-top-K full-corpus
+    # filter; the ID may have appeared only on the report's cover page.
+    if target_report:
+        filtered_chunks = _filter_report_scope(relevant_chunks, target_report, strict_report_id=True)
+        if filtered_chunks:
+            relevant_chunks = filtered_chunks
+        else:
+            has_report_identity = any(
+                c.get("metadata", {}).get("report_id")
+                or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), target_report)
+                or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), target_report)
+                or _scope_phrase_matches(c.get("text", ""), target_report)
+                for c in relevant_chunks
+            )
+            if has_report_identity:
+                return {
+                    "answer": f"Based on the available healthcare documents in your selected scope, report {target_report} was not found.",
+                    "sources": [],
+                    "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                    "route": route,
+                    "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+                }
+
+    # Apply report-type scope similarly. The descriptor may appear only on the
+    # cover page, so a top-K page with no descriptor is not itself a conflict.
     if report_descriptor:
-        matching_document_keys = {
-            c.get("metadata", {}).get("document_id")
-            or c.get("metadata", {}).get("document_name")
-            or c.get("id")
-            for c in relevant_chunks
-            if _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), report_descriptor)
-            or _scope_phrase_matches(c.get("text", ""), report_descriptor)
-        }
-        filtered_chunks = [
-            c for c in relevant_chunks
-            if (
-                c.get("metadata", {}).get("document_id")
-                or c.get("metadata", {}).get("document_name")
-                or c.get("id")
-            ) in matching_document_keys
-        ]
-        if not filtered_chunks:
-            return {
-                "answer": f"No {report_descriptor} report was found in the selected patient/document scope.",
-                "sources": [],
-                "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
-                "route": route,
-                "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
-            }
-        relevant_chunks = filtered_chunks
+        filtered_chunks = _filter_report_scope(relevant_chunks, report_descriptor, strict_report_id=False)
+        if filtered_chunks:
+            relevant_chunks = filtered_chunks
+        else:
+            descriptor_evidence = re.compile(
+                r"\b(follow[\s_-]?up|routine|baseline|initial|discharge|admission)\b",
+                re.I,
+            )
+            has_report_type_identity = any(
+                descriptor_evidence.search(c.get("metadata", {}).get("document_name", ""))
+                or descriptor_evidence.search(c.get("text", ""))
+                for c in relevant_chunks
+            )
+            if has_report_type_identity:
+                return {
+                    "answer": f"No {report_descriptor} report was found in the selected patient/document scope.",
+                    "sources": [],
+                    "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                    "route": route,
+                    "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+                }
 
     # Handle latest-result query by sorting by parsed report date if multiple dates are present
     if is_latest_query and len(relevant_chunks) > 1:
