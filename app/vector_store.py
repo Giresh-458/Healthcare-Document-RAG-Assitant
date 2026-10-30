@@ -140,7 +140,8 @@ def list_document_records(session_id: str = "global") -> List[Dict]:
     records = {}
     metadatas = results.get("metadatas") or []
     documents = results.get("documents") or []
-    for metadata, text in zip(metadatas, documents):
+    for index, metadata in enumerate(metadatas):
+        text = documents[index] if index < len(documents) else ""
         if not metadata or not metadata.get("document_name"):
             continue
         # Legacy chunks did not have document_id; keep them visible as a legacy record.
