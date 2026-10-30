@@ -1673,31 +1673,28 @@ def test_get_all_chunks_report_scope_keeps_result_pages_when_id_is_on_cover(monk
     assert {chunk["metadata"]["page"] for chunk in result} == {1, 2}
 
 
-def test_document_records_infer_patient_labels_for_existing_indexed_uploads(monkeypatch):
-    """Legacy records with unspecified metadata are labelled from their stored text/filename."""
+def test_document_records_infer_patient_labels_from_legacy_filenames_without_loading_text(monkeypatch):
+    """Legacy records with unspecified metadata get safe filename labels without fetching chunk text."""
     from app.vector_store import list_document_records
 
     metadata = [
         {"document_id": "doc-a", "document_name": "01_patient_a_routine_labs.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
         {"document_id": "doc-a", "document_name": "01_patient_a_routine_labs.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
-        {"document_id": "doc-mixed", "document_name": "08_multiple_records_scope_conflict.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
-        {"document_id": "doc-mixed", "document_name": "08_multiple_records_scope_conflict.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+        {"document_id": "doc-mixed", "document_name": "08_multiple_records_scope_conflict.pdf", "patient_label": "mixed", "session_id": "qa-session"},
     ]
-    documents = [
-        "Patient A",
-        "Hemoglobin 13.4 g/dL",
-        "Patient B: hemoglobin 10.8 g/dL",
-        "Patient C: hemoglobin 14.1 g/dL",
-    ]
-    monkeypatch.setattr(
-        "app.vector_store.collection.get",
-        lambda where, include: {"metadatas": metadata, "documents": documents},
-    )
+    captured = {}
+
+    def mock_get(where, include):
+        captured["include"] = include
+        return {"metadatas": metadata}
+
+    monkeypatch.setattr("app.vector_store.collection.get", mock_get)
 
     records = list_document_records("qa-session")
     labels = {record["document_id"]: record["patient_label"] for record in records}
 
     assert labels == {"doc-a": "Patient A", "doc-mixed": "mixed"}
+    assert captured["include"] == ["metadatas"]
 
 
 def test_selected_patient_scope_with_legacy_metadata_uses_filtered_bm25_not_empty_dense_filter(monkeypatch):
