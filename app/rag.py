@@ -153,7 +153,7 @@ def _contains_report_id_candidate(question: str) -> bool:
     """Return whether a query contains a hyphenated identifier worth validating against selected reports."""
     # Do not treat arbitrary identifiers as report IDs here. The candidate is
     # validated against report_id metadata from the selected upload corpus below.
-    return bool(re.search(r"\\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\\b", question, re.I))
+    return bool(re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", question, re.I))
 
 
 def _extract_report_descriptor(question: str) -> Optional[str]:
