@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, Optional, List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from app.hybrid_retriever import HybridRetriever
+from app.hybrid_retriever import HybridRetriever, filter_patient_chunks
 from app.metrics import RagMetrics
 from app.query_router import QueryRouter
 from app.config import TOP_K
@@ -79,9 +79,20 @@ def _extract_target_patient(
     if match:
         return match.group(1).strip()
 
-    if history:
-        for msg in reversed(history[-4:]):
+    # Only inherit patient scope from prior USER turns. Assistant-generated citations
+    # and summaries are evidence, not instructions for silently scoping a new query.
+    # Broad/reference-range questions must remain broad rather than inheriting a stale patient.
+    broad_question = (
+        _is_multi_record_query(question)
+        or bool(re.search(r"\b(reference\s+(?:range|interval)|uploaded\s+(?:reports|documents)|all\s+(?:reports|documents))\b", question, re.I))
+    )
+    if history and not broad_question:
+        for msg in reversed(history[-6:]):
+            if msg.get("role") != "user":
+                continue
             content = msg.get("content", "")
+            if not content or content.strip() == question.strip():
+                continue
             if candidate_patients:
                 for p in candidate_patients:
                     if p and p != "unspecified" and re.search(rf"\b{re.escape(p)}\b", content, re.I):
@@ -114,9 +125,17 @@ def _extract_target_report(
         if val.lower() not in stop_words and (any(c.isdigit() for c in val) or (candidate_reports and val in candidate_reports)):
             return val
 
-    if history:
-        for msg in reversed(history[-4:]):
+    # A report ID from history is inherited only for an explicit anaphoric
+    # follow-up (e.g. "that report" / "its date"). Never inherit IDs from
+    # assistant citations or unrelated earlier user questions.
+    refers_to_prior_report = bool(re.search(r"\b(that|same|this|its|there|those|previous)\b", question, re.I))
+    if history and refers_to_prior_report:
+        for msg in reversed(history[-6:]):
+            if msg.get("role") != "user":
+                continue
             content = msg.get("content", "")
+            if not content or content.strip() == question.strip():
+                continue
             if candidate_reports:
                 for r in candidate_reports:
                     if r and re.search(rf"\b{re.escape(r)}\b", content, re.I):
@@ -128,6 +147,64 @@ def _extract_target_report(
                     return val
 
     return None
+
+
+def _extract_report_descriptor(question: str) -> Optional[str]:
+    """Extract one unambiguous report type; comparisons may name multiple types."""
+    descriptors = (
+        ("follow-up", r"\bfollow[\s_-]?up\b"),
+        ("routine", r"\broutine\b"),
+        ("baseline", r"\bbaseline\b"),
+        ("initial", r"\binitial\b"),
+        ("discharge", r"\bdischarge\b"),
+        ("admission", r"\badmission\b"),
+    )
+    matches = [label for label, pattern in descriptors if re.search(pattern, question, re.I)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _scope_phrase_matches(value: str, phrase: str) -> bool:
+    """Match a scope phrase across spaces, underscores, or hyphens."""
+    if not value or not phrase:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9]+", phrase)
+    if not tokens:
+        return False
+    pattern = r"(?<![A-Za-z0-9])" + r"[\s_-]*".join(re.escape(token) for token in tokens) + r"(?![A-Za-z0-9])"
+    return bool(re.search(pattern, str(value), re.I))
+
+
+def _filter_report_scope(
+    chunks: List[Dict],
+    report_query: Optional[str],
+    strict_report_id: bool = True,
+) -> List[Dict]:
+    """Filter by report ID/type while retaining other pages from the matched upload."""
+    if not report_query:
+        return chunks
+    matching_document_keys = {
+        c.get("metadata", {}).get("document_id")
+        or c.get("metadata", {}).get("document_name")
+        or c.get("id")
+        for c in chunks
+        if _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), report_query)
+        or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), report_query)
+        or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), report_query)
+        or _scope_phrase_matches(c.get("text", ""), report_query)
+    }
+    return [
+        c for c in chunks
+        if (
+            c.get("metadata", {}).get("document_id")
+            or c.get("metadata", {}).get("document_name")
+            or c.get("id")
+        ) in matching_document_keys
+        and (
+            not strict_report_id
+            or not c.get("metadata", {}).get("report_id")
+            or _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), report_query)
+        )
+    ]
 
 
 def _parse_date_to_key(date_str: str) -> str:
@@ -330,6 +407,173 @@ def _all_hemoglobin_candidates(
     }
 
 
+def _all_reference_range_candidates(
+    question: str,
+    chunks: List[Dict],
+    start_time: float,
+    system1_enabled: bool = False,
+    system1_provider: str = "codiv",
+    system1_api_key: Optional[str] = None,
+    system1_threshold: float = DEFAULT_SUFFICIENCY_THRESHOLD,
+    system1_endpoint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Extract report-stated reference intervals without mixing measured values."""
+    clinical_test = _extract_clinical_test(question)
+    if not clinical_test:
+        return {
+            "answer": "Which laboratory test's reference range would you like to find in the uploaded reports?",
+            "clarification_required": True,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+
+    aliases = {
+        "hemoglobin": r"\b(?:hemoglobin|haemoglobin|hgb|hb)\b",
+        "hba1c": r"\b(?:hba1c|hemoglobin\s+a1c)\b",
+    }
+    test_pattern = aliases.get(clinical_test, rf"\b{re.escape(clinical_test)}\b")
+    range_pattern = re.compile(
+        r"\b(?:reference(?:\s+(?:range|interval))?|ref\.?\s*range|normal\s+range)\b"
+        r"\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)\s*(?:-|–|—|\bto\b)\s*"
+        r"(\d{1,3}(?:\.\d+)?)\s*([A-Za-zµμ%]+(?:\s*/\s*[A-Za-zµμ0-9^]+)?)?",
+        re.I,
+    )
+    rows, matching_chunks, seen = [], [], set()
+    page_groups = {}
+    for chunk in chunks:
+        metadata = chunk.get("metadata", {})
+        page_key = (
+            metadata.get("document_id") or metadata.get("document_name"),
+            metadata.get("page"),
+        )
+        page_groups.setdefault(page_key, []).append(chunk)
+
+    # Reassemble chunks from the same PDF page so a split between the test name
+    # and its reference interval does not hide evidence.
+    for page_chunks in page_groups.values():
+        metadata = page_chunks[0].get("metadata", {})
+        text = "\n".join(str(chunk.get("text", "") or "") for chunk in page_chunks)
+        lines = text.splitlines() or [text]
+        matched_page = False
+        for line_index, line in enumerate(lines):
+            context = " ".join(lines[max(0, line_index - 1):min(len(lines), line_index + 2)])
+            if not re.search(test_pattern, context, re.I):
+                continue
+            for match in range_pattern.finditer(line):
+                low, high = match.group(1), match.group(2)
+                unit = re.sub(r"\s+", "", match.group(3) or "") or "unit not stated"
+                key = (metadata.get("document_id"), metadata.get("page"), low, high, unit.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "lower": low,
+                    "upper": high,
+                    "unit": unit,
+                    "document": metadata.get("document_name", "unknown"),
+                    "document_id": metadata.get("document_id", ""),
+                    "page": metadata.get("page", "?"),
+                    "report_id": metadata.get("report_id", ""),
+                    "report_date": metadata.get("report_date", ""),
+                })
+                matched_page = True
+        if matched_page:
+            matching_chunks.extend(page_chunks)
+
+    system1_decision_dict = None
+    if system1_enabled and matching_chunks:
+        decision = evaluate_evidence_sufficiency(
+            question=question,
+            chunks=matching_chunks[:TOP_K * 2],
+            provider=system1_provider,
+            api_key=(system1_api_key or "").strip(),
+            threshold=system1_threshold,
+            endpoint=system1_endpoint,
+        )
+        system1_decision_dict = decision.to_dict()
+        if decision.status != "SUFFICIENT":
+            if decision.status == "ERROR":
+                notice = (
+                    "The System 1 evidence-sufficiency gate could not verify the reference-range evidence. "
+                    "No reference interval is being returned."
+                )
+            else:
+                notice = (
+                    "The uploaded reports did not provide sufficient verified evidence to extract the requested "
+                    "reference range accurately. No reference interval is being returned."
+                )
+            sources, seen_sources = [], set()
+            for chunk in matching_chunks:
+                source = _source(chunk)
+                key = (source["document_id"], source["document"], source["page"])
+                if key not in seen_sources:
+                    seen_sources.add(key)
+                    sources.append(source)
+            metrics = RagMetrics.log_metrics(question, notice, matching_chunks, round(time.time() - start_time, 2))
+            metrics["system1_decision"] = system1_decision_dict
+            return {
+                "answer": notice,
+                "sources": sources,
+                "metrics": metrics,
+                "route": "REFERENCE_RANGE_SCAN",
+                "structured_data": {
+                    "confidence": "low",
+                    "medical_entities": [clinical_test],
+                    "requires_doctor_review": True,
+                    "system1_decision": system1_decision_dict,
+                },
+                "abstained_by_system1": True,
+            }
+
+    sources, seen_sources = [], set()
+    for chunk in matching_chunks:
+        source = _source(chunk)
+        key = (source["document_id"], source["document"], source["page"])
+        if key not in seen_sources:
+            seen_sources.add(key)
+            sources.append(source)
+
+    if rows:
+        interval_lines = [
+            f"- {row['lower']}–{row['upper']} {row['unit']} — {row['document']}, page {row['page']}"
+            for row in rows
+        ]
+        answer = (
+            f"The selected reports state these {clinical_test} reference intervals:\n"
+            + "\n".join(interval_lines)
+            + "\n\nThese are transcribed from the uploaded reports, not a universal reference range. "
+              "Intervals can vary by laboratory and patient context."
+        )
+    else:
+        answer = (
+            f"No explicit {clinical_test} reference range was found in the selected uploaded reports. "
+            "I will not substitute a general medical reference range that is not stated in those documents."
+        )
+
+    latency = round(time.time() - start_time, 2)
+    metrics = RagMetrics.log_metrics(question, answer, matching_chunks, latency)
+    metrics["reference_range_candidates"] = len(rows)
+    metrics["aggregation_method"] = "full-corpus report-stated reference interval scan"
+    if system1_decision_dict:
+        metrics["system1_decision"] = system1_decision_dict
+    structured_data = {
+        "confidence": "high" if rows else "low",
+        "medical_entities": [clinical_test],
+        "requires_doctor_review": True,
+    }
+    if system1_decision_dict:
+        structured_data["system1_decision"] = system1_decision_dict
+    return {
+        "answer": answer,
+        "sources": sources,
+        "metrics": metrics,
+        "route": "REFERENCE_RANGE_SCAN",
+        "structured_data": structured_data,
+    }
+
+
 def answer_question(
     question: str,
     provider: str,
@@ -392,9 +636,45 @@ def answer_question(
 
     asks_all = _is_multi_record_query(question)
     asks_hemoglobin = bool(re.search(r"\b(hemoglobin|haemoglobin|hgb|hb)\b", question, re.I))
+    asks_reference_range = bool(
+        re.search(r"\b(reference\s+(?:range|interval)|ref\.?\s*range|normal\s+range)\b", question, re.I)
+    )
+    # Resolve explicit question scope before considering UI or conversation scope.
+    explicit_patient = _extract_target_patient(question)
+    explicit_report = _extract_target_report(question)
+    if patient_label and explicit_patient and not (
+        _scope_phrase_matches(patient_label, explicit_patient)
+        or _scope_phrase_matches(explicit_patient, patient_label)
+    ):
+        return {
+            "answer": f"The current Chat Context is scoped to {patient_label}, but your question names {explicit_patient}. Please make those scopes agree before continuing.",
+            "clarification_required": True,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+    if report_id and explicit_report and not (
+        _scope_phrase_matches(report_id, explicit_report)
+        or _scope_phrase_matches(explicit_report, report_id)
+    ):
+        return {
+            "answer": f"The selected report scope is {report_id}, but your question names {explicit_report}. Please make those scopes agree before continuing.",
+            "clarification_required": True,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+
+    # Patient/report scope is applied to the complete selected-document corpus
+    # before BM25/dense top-K ranking, not inferred from the top-K result set.
+    target_patient = explicit_patient or patient_label or _extract_target_patient(question, conversation_history)
+    target_report = explicit_report or report_id or _extract_target_report(question, conversation_history)
+    report_descriptor = _extract_report_descriptor(question)
 
     # Explicit all-record hemoglobin questions use a full-corpus scan across selected documents.
-    if asks_all and asks_hemoglobin:
+    if asks_all and asks_hemoglobin and not asks_reference_range:
         chunks = HybridRetriever.get_all_chunks(
             document_names=document_names, session_id=session_id,
             document_ids=document_ids, patient_label=patient_label,
@@ -420,6 +700,33 @@ def answer_question(
             system1_endpoint=system1_endpoint,
         )
 
+    if asks_reference_range:
+        # Reference intervals are report facts, not measured patient results.
+        # Scan the selected corpus so a top-K cutoff cannot hide a report's range.
+        reference_chunks = HybridRetriever.get_all_chunks(
+            document_names=document_names,
+            session_id=session_id,
+            document_ids=document_ids,
+            patient_label=patient_label,
+            report_id=None,
+        )
+        if target_patient:
+            reference_chunks = filter_patient_chunks(reference_chunks, target_patient)
+        if target_report:
+            reference_chunks = _filter_report_scope(reference_chunks, target_report, strict_report_id=True)
+        if report_descriptor:
+            reference_chunks = _filter_report_scope(reference_chunks, report_descriptor, strict_report_id=False)
+        return _all_reference_range_candidates(
+            question=question,
+            chunks=reference_chunks,
+            start_time=start_time,
+            system1_enabled=system1_enabled,
+            system1_provider=system1_provider,
+            system1_api_key=system1_api_key,
+            system1_threshold=system1_threshold,
+            system1_endpoint=system1_endpoint,
+        )
+
     chat = get_llm(provider, api_key)
     route = QueryRouter.classify(question, chat)
     if route == "IRRELEVANT":
@@ -435,6 +742,8 @@ def answer_question(
     relevant_chunks = HybridRetriever.search(
         question, top_k=k_value, document_names=document_names, session_id=session_id,
         document_ids=document_ids, patient_label=patient_label, report_id=report_id,
+        patient_query=target_patient, report_query=target_report,
+        report_type_query=report_descriptor,
     )
     if not relevant_chunks:
         return {
@@ -460,8 +769,8 @@ def answer_question(
         if c.get("metadata", {}).get("report_id")
     })
 
-    target_patient = patient_label or _extract_target_patient(question, conversation_history, candidate_patients)
-    target_report = report_id or _extract_target_report(question, conversation_history, candidate_reports)
+    target_patient = target_patient or _extract_target_patient(question, conversation_history, candidate_patients)
+    target_report = target_report or _extract_target_report(question, conversation_history, candidate_reports)
     clinical_test = _extract_clinical_test(question)
     is_latest_query = bool(re.search(r"\b(latest|most recent|newest)\b", question, re.I))
 
@@ -508,50 +817,82 @@ def answer_question(
             "structured_data": {"confidence": "low", "medical_entities": [test_display] if clinical_test else [], "requires_doctor_review": True},
         }
 
-    # Filter chunks for patient-specific query
+    # Apply the same upload-aware patient filter after retrieval as a defense-in-depth
+    # check. It retains unlabelled pages when the upload contains only one patient.
     if target_patient:
-        filtered_chunks = []
-        for c in relevant_chunks:
-            m = c.get("metadata", {})
-            p_lbl = m.get("patient_label", "")
-            txt = c.get("text", "")
-            if p_lbl and p_lbl.lower() == target_patient.lower():
-                filtered_chunks.append(c)
-            elif re.search(rf"\b{re.escape(target_patient)}\b", txt, re.I):
-                filtered_chunks.append(c)
-        if not filtered_chunks:
-            return {
-                "answer": f"Based on the available healthcare documents in your selected scope, no records were found for {target_patient}.",
-                "sources": [],
-                "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
-                "route": route,
-                "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
-            }
-        relevant_chunks = filtered_chunks
+        filtered_chunks = filter_patient_chunks(relevant_chunks, target_patient)
+        if filtered_chunks:
+            relevant_chunks = filtered_chunks
+        else:
+            # The full-corpus retriever has already applied patient scope. A top-K
+            # result page may omit the patient name that appeared only on the cover.
+            has_patient_identity = any(
+                (
+                    c.get("metadata", {}).get("patient_label")
+                    and c.get("metadata", {}).get("patient_label", "").casefold() != "unspecified"
+                )
+                or re.search(r"\bPatient[\s_-]+[A-Za-z0-9_-]+\b", c.get("text", ""), re.I)
+                or re.search(r"\b(?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+", c.get("text", ""), re.I)
+                or re.search(r"\bpatient[_-][a-z0-9]+\b", c.get("metadata", {}).get("document_name", ""), re.I)
+                for c in relevant_chunks
+            )
+            if has_patient_identity:
+                return {
+                    "answer": f"Based on the available healthcare documents in your selected scope, no records were found for {target_patient}.",
+                    "sources": [],
+                    "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                    "route": route,
+                    "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+                }
 
-    # Filter chunks for report-specific query
+    # Apply report ID scope to retrieved chunks when the ID is visible in top-K.
+    # If top-K contains no report identity at all, trust the pre-top-K full-corpus
+    # filter; the ID may have appeared only on the report's cover page.
     if target_report:
-        filtered_chunks = []
-        for c in relevant_chunks:
-            m = c.get("metadata", {})
-            r_id = m.get("report_id", "")
-            doc_id = m.get("document_id", "")
-            doc_name = m.get("document_name", "")
-            txt = c.get("text", "")
-            if (r_id and r_id.lower() == target_report.lower()) or \
-               (target_report.lower() in doc_name.lower()) or \
-               (target_report.lower() in doc_id.lower()) or \
-               (re.search(rf"\b{re.escape(target_report)}\b", txt, re.I)):
-                filtered_chunks.append(c)
-        if not filtered_chunks:
-            return {
-                "answer": f"Based on the available healthcare documents in your selected scope, report {target_report} was not found.",
-                "sources": [],
-                "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
-                "route": route,
-                "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
-            }
-        relevant_chunks = filtered_chunks
+        filtered_chunks = _filter_report_scope(relevant_chunks, target_report, strict_report_id=True)
+        if filtered_chunks:
+            relevant_chunks = filtered_chunks
+        else:
+            has_report_identity = any(
+                c.get("metadata", {}).get("report_id")
+                or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), target_report)
+                or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), target_report)
+                or _scope_phrase_matches(c.get("text", ""), target_report)
+                for c in relevant_chunks
+            )
+            if has_report_identity:
+                return {
+                    "answer": f"Based on the available healthcare documents in your selected scope, report {target_report} was not found.",
+                    "sources": [],
+                    "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                    "route": route,
+                    "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+                }
+
+    # Apply report-type scope similarly. The descriptor may appear only on the
+    # cover page, so a top-K page with no descriptor is not itself a conflict.
+    if report_descriptor:
+        filtered_chunks = _filter_report_scope(relevant_chunks, report_descriptor, strict_report_id=False)
+        if filtered_chunks:
+            relevant_chunks = filtered_chunks
+        else:
+            descriptor_evidence = re.compile(
+                r"\b(follow[\s_-]?up|routine|baseline|initial|discharge|admission)\b",
+                re.I,
+            )
+            has_report_type_identity = any(
+                descriptor_evidence.search(c.get("metadata", {}).get("document_name", ""))
+                or descriptor_evidence.search(c.get("text", ""))
+                for c in relevant_chunks
+            )
+            if has_report_type_identity:
+                return {
+                    "answer": f"No {report_descriptor} report was found in the selected patient/document scope.",
+                    "sources": [],
+                    "metrics": {"latency_sec": round(time.time() - start_time, 2), "retrieved_chunks": 0},
+                    "route": route,
+                    "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+                }
 
     # Handle latest-result query by sorting by parsed report date if multiple dates are present
     if is_latest_query and len(relevant_chunks) > 1:

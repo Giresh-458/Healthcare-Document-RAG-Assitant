@@ -1,9 +1,7 @@
-"""Targeted Regression Tests for Document Selection, Patient/Report Scope, and Scalability.
+"""Regression tests for document selection, patient/report scope, and retrieval scalability.
 
-Covers all 27 requirements in Phase 8:
-- Tests 1-12: Document selection, empty selection fail-closed, isolation, caching, fallbacks.
-- Tests 13-22: Patient/report scope, ambiguous queries, latest-date resolution, injection safety.
-- Tests 23-27: Scalability benchmark (3,000+ synthetic docs), deduplication, citations, regressions.
+Covers the original Phase 8 cases plus patient/report routing and reference-range
+regressions in tests 35-51.
 """
 import time
 import pytest
@@ -399,7 +397,6 @@ def test_12_system1_and_system2_receive_same_validated_evidence_scope(monkeypatc
             medical_entities=["hemoglobin"],
             requires_doctor_review=True,
         )
-
     mock_chat.with_structured_output.return_value.invoke = mock_structured_invoke
     monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
     monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
@@ -1010,3 +1007,380 @@ def test_34_exact_user_scenario_what_is_hemoglobin_level_with_3_unlabelled_docs(
     assert result["sources"] == []
 
 
+
+def test_35_patient_scope_is_applied_before_top_k_retrieval(monkeypatch):
+    """Question-derived patient scope must filter the corpus before ranking."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunk_a = _make_chunk("doc-a", "patient_a.pdf", 1, "Patient A Hemoglobin 14.2 g/dL", patient_label="unspecified")
+    chunk_b = _make_chunk("doc-b", "patient_b.pdf", 1, "Patient B Hemoglobin 10.8 g/dL", patient_label="unspecified")
+    monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [chunk_a, chunk_b])
+    mock_collection = MagicMock()
+    mock_collection.query.return_value = {"ids": [[]]}
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "What is Patient B's hemoglobin?",
+        top_k=1,
+        document_ids=["doc-a", "doc-b"],
+        patient_query="Patient B",
+    )
+
+    assert [item["metadata"]["document_id"] for item in results] == ["doc-b"]
+    assert "Patient A" not in results[0]["text"]
+    # Text-only patient scoping must not issue an unfiltered dense query.
+    mock_collection.query.assert_not_called()
+
+
+def test_36_report_descriptor_is_applied_before_top_k_retrieval(monkeypatch):
+    """A follow-up report must not be displaced by a higher-scoring routine report."""
+    from app.hybrid_retriever import HybridRetriever
+
+    routine = _make_chunk("doc-r", "patient_a_routine_report.pdf", 1, "Patient A routine hemoglobin 13.4 g/dL", report_id="SYN-A-001")
+    followup = _make_chunk("doc-f", "patient_a_followup_report.pdf", 1, "Patient A follow-up hemoglobin 12.9 g/dL", report_id="SYN-A-002")
+    monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [routine, followup])
+    mock_collection = MagicMock()
+    mock_collection.query.return_value = {"ids": [[]]}
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "What is Patient A's follow-up hemoglobin?",
+        top_k=1,
+        document_ids=["doc-r", "doc-f"],
+        patient_query="Patient A",
+        report_type_query="follow-up",
+    )
+
+    assert [item["metadata"]["document_id"] for item in results] == ["doc-f"]
+    assert "12.9" in results[0]["text"]
+    assert "13.4" not in results[0]["text"]
+    mock_collection.query.assert_not_called()
+
+
+def test_37_report_id_is_not_inherited_from_assistant_citation_for_new_query():
+    """Assistant-generated citations must not silently constrain a later report query."""
+    history = [
+        {"role": "user", "content": "What is Patient A's routine hemoglobin?"},
+        {"role": "assistant", "content": "The result is in report SYN-A-001."},
+    ]
+    assert _extract_target_report(
+        "What is Patient A's follow-up hemoglobin?",
+        history=history,
+    ) is None
+
+
+def test_38_reference_range_question_does_not_inherit_old_patient_scope():
+    """A broad reference-range question must not inherit a prior patient label."""
+    history = [
+        {"role": "user", "content": "What is Patient A's hemoglobin?"},
+        {"role": "assistant", "content": "Patient A's result is 13.4 g/dL."},
+    ]
+    assert _extract_target_patient(
+        "What is the hemoglobin reference range according to uploaded reports?",
+        history=history,
+    ) is None
+
+
+def test_39_report_id_history_is_inherited_only_for_anaphoric_follow_up():
+    """A user can still refer to the same report explicitly across turns."""
+    history = [
+        {"role": "user", "content": "What is the hemoglobin in report SYN-A-001?"},
+        {"role": "assistant", "content": "The result is 13.4 g/dL."},
+    ]
+    assert _extract_target_report("What is that report's date?", history=history) == "SYN-A-001"
+
+
+
+def test_40_explicit_report_id_is_applied_before_top_k_retrieval(monkeypatch):
+    """An explicit report ID must be isolated before ranking across selected uploads."""
+    from app.hybrid_retriever import HybridRetriever
+
+    report_a = _make_chunk("doc-a", "routine.pdf", 1, "Report SYN-A-001: Hemoglobin 13.4 g/dL")
+    report_b = _make_chunk("doc-b", "followup.pdf", 1, "Report SYN-A-002: Hemoglobin 12.9 g/dL")
+    monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [report_a, report_b])
+    mock_collection = MagicMock()
+    mock_collection.query.return_value = {"ids": [[]]}
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "What is the hemoglobin in report SYN-A-002?",
+        top_k=1,
+        document_ids=["doc-a", "doc-b"],
+        report_query="SYN-A-002",
+    )
+
+    assert [item["metadata"]["document_id"] for item in results] == ["doc-b"]
+    assert "12.9" in results[0]["text"]
+    assert "13.4" not in results[0]["text"]
+    mock_collection.query.assert_not_called()
+
+
+def test_41_scope_phrases_match_underscore_separated_upload_filenames():
+    """Patient and report labels remain detectable in normalized upload filenames."""
+    from app.hybrid_retriever import _scope_phrase_matches
+
+    assert _scope_phrase_matches("01_patient_b_low_hemoglobin.pdf", "Patient B")
+    assert _scope_phrase_matches("patient_a_followup_report.pdf", "follow-up")
+    assert _scope_phrase_matches("lab_SYN-A-002.pdf", "SYN-A-002")
+
+
+def test_42_report_id_on_cover_page_keeps_value_page_in_answer_context(monkeypatch):
+    """A report ID on page one must retain later pages from the same upload."""
+    cover = _make_chunk("doc-report", "lab.pdf", 1, "Report SYN-A-002")
+    result_page = _make_chunk("doc-report", "lab.pdf", 2, "Hemoglobin 12.9 g/dL")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="The report records hemoglobin at 12.9 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [cover, result_page])
+
+    result = answer_question(
+        question="What is the hemoglobin in report SYN-A-002?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-report"],
+    )
+
+    assert "12.9 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [1, 2]
+
+
+def test_43_followup_heading_on_cover_page_keeps_later_result_page(monkeypatch):
+    """A follow-up descriptor on the cover page must retain the report's result page."""
+    cover = _make_chunk("doc-followup", "patient_a_lab.pdf", 1, "Patient A follow-up report", patient_label="Patient A")
+    result_page = _make_chunk("doc-followup", "patient_a_lab.pdf", 2, "Hemoglobin 12.9 g/dL", patient_label="Patient A")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="Patient A's follow-up hemoglobin is 12.9 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [cover, result_page])
+
+    result = answer_question(
+        question="What is Patient A's follow-up hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-followup"],
+    )
+
+    assert "12.9 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [1, 2]
+
+
+def test_44_patient_name_on_cover_page_keeps_later_lab_result_page(monkeypatch):
+    """A single-patient upload retains later pages even if only its cover names the patient."""
+    cover = _make_chunk("doc-patient", "lab.pdf", 1, "Patient A clinical laboratory report")
+    result_page = _make_chunk("doc-patient", "lab.pdf", 2, "Hemoglobin 13.4 g/dL")
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="Patient A's hemoglobin is 13.4 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [cover, result_page])
+
+    result = answer_question(
+        question="What is Patient A's hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-patient"],
+    )
+
+    assert "13.4 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [1, 2]
+
+
+def test_45_conflicting_patient_question_and_chat_context_fails_closed(monkeypatch):
+    """An explicit patient in the question cannot be overridden by a different UI scope."""
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.search",
+        lambda *args, **kwargs: pytest.fail("retrieval must not run for conflicting patient scopes"),
+    )
+
+    result = answer_question(
+        question="What is Patient B's hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a", "doc-b"],
+        patient_label="Patient A",
+    )
+
+    assert result.get("clarification_required") is True
+    assert result["route"] == "CLARIFICATION"
+    assert result["sources"] == []
+    assert "Patient A" in result["answer"]
+    assert "Patient B" in result["answer"]
+
+
+def test_46_conflicting_report_question_and_selected_report_fails_closed(monkeypatch):
+    """An explicit report ID in the question cannot be overridden by another selected report."""
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.search",
+        lambda *args, **kwargs: pytest.fail("retrieval must not run for conflicting report scopes"),
+    )
+
+    result = answer_question(
+        question="What is the hemoglobin in report SYN-A-002?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a", "doc-b"],
+        report_id="SYN-A-001",
+    )
+
+    assert result.get("clarification_required") is True
+    assert result["route"] == "CLARIFICATION"
+    assert result["sources"] == []
+    assert "SYN-A-001" in result["answer"]
+    assert "SYN-A-002" in result["answer"]
+
+
+def test_47_reference_range_query_scans_selected_reports_without_measured_values(monkeypatch):
+    """Reference-range questions list only report-stated intervals across selected uploads."""
+    chunk_a = _make_chunk(
+        "doc-a", "patient_a_labs.pdf", 1,
+        "Patient A\nHemoglobin 13.4 g/dL\nReference interval: 12.0-16.0 g/dL",
+        patient_label="unspecified",
+    )
+    chunk_b = _make_chunk(
+        "doc-b", "patient_b_labs.pdf", 1,
+        "Patient B\nHemoglobin 10.8 g/dL\nReference interval: 12.0-16.0 g/dL",
+        patient_label="unspecified",
+    )
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [chunk_a, chunk_b])
+    monkeypatch.setattr(
+        "app.rag.QueryRouter.classify",
+        lambda *args, **kwargs: pytest.fail("reference-range scan should not use top-K routing"),
+    )
+    monkeypatch.setattr(
+        "app.rag.get_llm",
+        lambda *args, **kwargs: pytest.fail("reference-range scan should be deterministic"),
+    )
+
+    result = answer_question(
+        question="What is the hemoglobin reference range according to uploaded reports?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a", "doc-b"],
+    )
+
+    assert result["route"] == "REFERENCE_RANGE_SCAN"
+    assert "12.0–16.0 g/dL" in result["answer"]
+    assert "13.4" not in result["answer"]
+    assert "10.8" not in result["answer"]
+    assert {source["document_id"] for source in result["sources"]} == {"doc-a", "doc-b"}
+
+
+def test_48_reference_range_scan_does_not_invent_missing_interval(monkeypatch):
+    """If a selected report has no stated interval, do not substitute a general range."""
+    chunk = _make_chunk("doc-a", "patient_a_labs.pdf", 1, "Hemoglobin 13.4 g/dL")
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [chunk])
+
+    result = answer_question(
+        question="What is the hemoglobin reference range according to uploaded reports?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a"],
+    )
+
+    assert result["route"] == "REFERENCE_RANGE_SCAN"
+    assert "No explicit hemoglobin reference range was found" in result["answer"]
+    assert "13.4" not in result["answer"]
+    assert result["sources"] == []
+
+
+def test_49_reference_range_scan_handles_test_and_interval_split_across_chunks(monkeypatch):
+    """Chunks from the same PDF page are reassembled before interval extraction."""
+    test_chunk = _make_chunk("doc-a", "patient_a_labs.pdf", 1, "Hemoglobin 13.4 g/dL")
+    range_chunk = _make_chunk("doc-a", "patient_a_labs.pdf", 1, "Reference interval: 12.0-16.0 g/dL")
+    range_chunk["id"] = "doc-a_page1_chunk2"
+    monkeypatch.setattr("app.rag.HybridRetriever.get_all_chunks", lambda **kwargs: [test_chunk, range_chunk])
+
+    result = answer_question(
+        question="What is the hemoglobin reference range according to uploaded reports?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a"],
+    )
+
+    assert "12.0–16.0 g/dL" in result["answer"]
+    assert result["route"] == "REFERENCE_RANGE_SCAN"
+    assert len(result["sources"]) == 1
+
+
+def test_50_top_k_result_page_without_cover_labels_is_not_dropped(monkeypatch):
+    """A correctly prefiltered result page may not repeat patient/report labels."""
+    result_page = _make_chunk("doc-followup", "lab.pdf", 2, "Hemoglobin 12.9 g/dL")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="Patient A's follow-up hemoglobin is 12.9 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    # Simulate the output of the full-corpus prefiltered retriever: only the
+    # value page is in top-K, while patient/report labels exist on the cover.
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [result_page])
+
+    result = answer_question(
+        question="What is Patient A's follow-up hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-followup"],
+    )
+
+    assert "12.9 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [2]
+
+
+def test_51_report_comparison_does_not_collapse_to_one_report_type():
+    """A question comparing routine and follow-up reports must keep both types in scope."""
+    from app.rag import _extract_report_descriptor
+
+    assert _extract_report_descriptor(
+        "Compare Patient A's routine and follow-up hemoglobin reports"
+    ) is None

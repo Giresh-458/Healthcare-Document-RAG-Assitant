@@ -45,6 +45,77 @@ def _where_clause(
     return clauses[0] if len(clauses) == 1 else {"$and": clauses}
 
 
+def _scope_phrase_matches(value: str, phrase: str) -> bool:
+    """Match a scope phrase across spaces, underscores, or hyphens."""
+    if not value or not phrase:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9]+", phrase)
+    if not tokens:
+        return False
+    pattern = r"(?<![A-Za-z0-9])" + r"[\s_-]*".join(re.escape(token) for token in tokens) + r"(?![A-Za-z0-9])"
+    return bool(re.search(pattern, str(value), re.I))
+
+
+def filter_patient_chunks(chunks: List[Dict], patient_query: Optional[str]) -> List[Dict]:
+    """Filter to one patient while retaining unlabelled pages from single-patient uploads."""
+    if not patient_query:
+        return chunks
+
+    matching_documents = set()
+    direct_matches = set()
+    identities_by_document = {}
+
+    for index, chunk in enumerate(chunks):
+        metadata = chunk.get("metadata", {})
+        document_key = metadata.get("document_id") or metadata.get("document_name") or chunk.get("id") or index
+        identities = identities_by_document.setdefault(document_key, set())
+        chunk_identities = set()
+
+        label = str(metadata.get("patient_label", "") or "").strip()
+        if label and label.casefold() != "unspecified":
+            chunk_identities.add(label)
+
+        text = str(chunk.get("text", "") or "")
+        for match in re.finditer(r"\bPatient[\s_-]+([A-Za-z0-9_-]+)\b", text, re.I):
+            token = match.group(1)
+            if token.casefold() not in {"id", "name", "record", "history", "details"}:
+                chunk_identities.add(f"Patient {token}")
+        for match in re.finditer(r"\b((?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+(?:\s+[A-Za-z]+)?)\b", text, re.I):
+            chunk_identities.add(match.group(1).strip())
+
+        document_name = str(metadata.get("document_name", "") or "")
+        filename_match = re.search(r"\bpatient[_-]([a-z0-9]+)\b", document_name, re.I)
+        if filename_match:
+            chunk_identities.add(f"Patient {filename_match.group(1)}")
+
+        identities.update(chunk_identities)
+        direct = (
+            _scope_phrase_matches(label, patient_query)
+            or _scope_phrase_matches(text, patient_query)
+            or _scope_phrase_matches(document_name, patient_query)
+        )
+        # Never pass a chunk that explicitly identifies more than one patient
+        # (or a different patient) into a single-patient answer.
+        if direct and all(_scope_phrase_matches(identity, patient_query) for identity in chunk_identities):
+            matching_documents.add(document_key)
+            direct_matches.add(chunk.get("id") or index)
+
+    filtered = []
+    for index, chunk in enumerate(chunks):
+        metadata = chunk.get("metadata", {})
+        document_key = metadata.get("document_id") or metadata.get("document_name") or chunk.get("id") or index
+        identities = identities_by_document.get(document_key, set())
+        document_has_only_target_patient = (
+            not identities
+            or all(_scope_phrase_matches(identity, patient_query) for identity in identities)
+        )
+        if document_key in matching_documents and (
+            document_has_only_target_patient or (chunk.get("id") or index) in direct_matches
+        ):
+            filtered.append(chunk)
+    return filtered
+
+
 class HybridRetriever:
     """Combine BM25 and dense ranks without comparing their raw scores."""
 
@@ -119,6 +190,9 @@ class HybridRetriever:
         document_ids: Optional[List[str]] = None,
         patient_label: Optional[str] = None,
         report_id: Optional[str] = None,
+        patient_query: Optional[str] = None,
+        report_query: Optional[str] = None,
+        report_type_query: Optional[str] = None,
     ) -> List[Dict]:
         if not question or not question.strip() or top_k <= 0:
             return []
@@ -141,14 +215,85 @@ class HybridRetriever:
         if not chunks:
             return []
 
+        # Apply question-derived scope to the complete selected corpus BEFORE
+        # BM25/dense top-K ranking. Patient/report mentions may live in PDF text
+        # or filenames even when upload metadata is absent.
+        if patient_query:
+            chunks = filter_patient_chunks(chunks, patient_query)
+        if report_query:
+            # Report IDs are extracted per PDF page. Resolve the owning upload
+            # from any matching page, then retain the other pages from that same
+            # report unless an exact report-ID query encounters a conflicting ID.
+            report_descriptors = {"follow-up", "routine", "baseline", "initial", "discharge", "admission"}
+            strict_report_id = report_query.casefold() not in report_descriptors
+            matching_document_keys = {
+                chunk.get("metadata", {}).get("document_id")
+                or chunk.get("metadata", {}).get("document_name")
+                or chunk.get("id")
+                for chunk in chunks
+                if _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
+                or _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), report_query)
+                or _scope_phrase_matches(chunk.get("metadata", {}).get("document_id", ""), report_query)
+                or _scope_phrase_matches(chunk.get("text", ""), report_query)
+            }
+            chunks = [
+                chunk for chunk in chunks
+                if (
+                    chunk.get("metadata", {}).get("document_id")
+                    or chunk.get("metadata", {}).get("document_name")
+                    or chunk.get("id")
+                ) in matching_document_keys
+                and (
+                    not strict_report_id
+                    or not chunk.get("metadata", {}).get("report_id")
+                    or _scope_phrase_matches(chunk.get("metadata", {}).get("report_id", ""), report_query)
+                )
+            ]
+        if report_type_query:
+            matching_document_keys = {
+                chunk.get("metadata", {}).get("document_id")
+                or chunk.get("metadata", {}).get("document_name")
+                or chunk.get("id")
+                for chunk in chunks
+                if _scope_phrase_matches(chunk.get("metadata", {}).get("document_name", ""), report_type_query)
+                or _scope_phrase_matches(chunk.get("text", ""), report_type_query)
+            }
+            chunks = [
+                chunk for chunk in chunks
+                if (
+                    chunk.get("metadata", {}).get("document_id")
+                    or chunk.get("metadata", {}).get("document_name")
+                    or chunk.get("id")
+                ) in matching_document_keys
+            ]
+        if not chunks:
+            return []
+
         candidate_k = min(max(top_k, candidate_k or top_k * 4), len(chunks))
-        where = _where_clause(document_names, session_id, document_ids, patient_label, report_id)
+        # Vector-store metadata filtering is safe only when every retained chunk
+        # carries the exact matching metadata value. For text-only scope, rely on
+        # BM25 over the already-filtered corpus instead of mixing other patients'
+        # dense candidates into the ranking.
+        patient_metadata_only = (
+            not patient_query
+            or all(str(c.get("metadata", {}).get("patient_label", "")).casefold() == patient_query.casefold() for c in chunks)
+        )
+        report_metadata_only = (
+            not report_query
+            or all(str(c.get("metadata", {}).get("report_id", "")).casefold() == report_query.casefold() for c in chunks)
+        )
+        dense_filterable = patient_metadata_only and report_metadata_only and not report_type_query
+        where = _where_clause(
+            document_names, session_id, document_ids,
+            patient_label or (patient_query if patient_metadata_only and patient_query else None),
+            report_id or (report_query if report_metadata_only and report_query else None),
+        )
 
         def tokenize(value):
             return re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.lower())
 
         # Cache key partitioned strictly by normalized document selection and chunk IDs
-        scope_prefix = f"{session_id}|{','.join(sorted(document_ids or []))}|{','.join(sorted(document_names or []))}|{patient_label or ''}|{report_id or ''}"
+        scope_prefix = f"{session_id}|{','.join(sorted(document_ids or []))}|{','.join(sorted(document_names or []))}|{patient_label or ''}|{report_id or ''}|{patient_query or ''}|{report_query or ''}|{report_type_query or ''}"
         fingerprint_source = scope_prefix + "\n" + "\n".join(f"{chunk['id']}\0{chunk['text']}" for chunk in chunks)
         fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
         with _BM25_LOCK:
@@ -170,13 +315,15 @@ class HybridRetriever:
         bm25_indices = sorted(range(len(chunks)), key=lambda i: bm25_scores[i], reverse=True)[:candidate_k]
 
         embeddings = get_embeddings_model()
-        dense_results = collection.query(
-            query_embeddings=[embeddings.embed_query(question)],
-            n_results=candidate_k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-        dense_ids = (dense_results.get("ids") or [[]])[0]
+        dense_ids = []
+        if dense_filterable:
+            dense_results = collection.query(
+                query_embeddings=[embeddings.embed_query(question)],
+                n_results=candidate_k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+            dense_ids = (dense_results.get("ids") or [[]])[0]
         dense_ranks = {doc_id: rank for rank, doc_id in enumerate(dense_ids)}
         fused_scores = {}
         chunks_by_id = {chunk["id"]: chunk for chunk in chunks}
