@@ -1227,3 +1227,47 @@ def test_44_patient_name_on_cover_page_keeps_later_lab_result_page(monkeypatch):
 
     assert "13.4 g/dL" in captured_context
     assert [source["page"] for source in result["sources"]] == [1, 2]
+
+
+def test_45_conflicting_patient_question_and_chat_context_fails_closed(monkeypatch):
+    """An explicit patient in the question cannot be overridden by a different UI scope."""
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.search",
+        lambda *args, **kwargs: pytest.fail("retrieval must not run for conflicting patient scopes"),
+    )
+
+    result = answer_question(
+        question="What is Patient B's hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a", "doc-b"],
+        patient_label="Patient A",
+    )
+
+    assert result.get("clarification_required") is True
+    assert result["route"] == "CLARIFICATION"
+    assert result["sources"] == []
+    assert "Patient A" in result["answer"]
+    assert "Patient B" in result["answer"]
+
+
+def test_46_conflicting_report_question_and_selected_report_fails_closed(monkeypatch):
+    """An explicit report ID in the question cannot be overridden by another selected report."""
+    monkeypatch.setattr(
+        "app.rag.HybridRetriever.search",
+        lambda *args, **kwargs: pytest.fail("retrieval must not run for conflicting report scopes"),
+    )
+
+    result = answer_question(
+        question="What is the hemoglobin in report SYN-A-002?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-a", "doc-b"],
+        report_id="SYN-A-001",
+    )
+
+    assert result.get("clarification_required") is True
+    assert result["route"] == "CLARIFICATION"
+    assert result["sources"] == []
+    assert "SYN-A-001" in result["answer"]
+    assert "SYN-A-002" in result["answer"]
