@@ -306,7 +306,8 @@ with st.sidebar:
         else:
             st.error("Demo file not found in sample_documents/ directory.")
 
-    patient_label_input = st.text_input("Patient label for this upload (optional)", placeholder="e.g., Patient A; not identity verification")
+    patient_label_input = st.text_input("Patient label for all selected PDFs (optional)", placeholder="e.g., Patient A; not identity verification")
+    st.caption("This label is applied to every PDF in the selected batch. If the files belong to different patients, leave it blank or upload each PDF separately with its own label.")
     st.caption("Upload multiple synthetic clinical PDFs (5MB maximum per file).")
     uploaded_files = st.file_uploader(
         "Upload PDF files",
