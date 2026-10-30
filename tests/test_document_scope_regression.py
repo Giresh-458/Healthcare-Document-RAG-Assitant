@@ -1610,3 +1610,91 @@ def test_upload_metadata_infers_patient_label_from_prefixed_filename_when_text_h
 
     stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
     assert stored_metadata[0]["patient_label"] == "Patient C"
+
+
+def test_get_all_chunks_patient_scope_keeps_unlabelled_result_pages(monkeypatch):
+    """Patient scope must be resolved across the selected upload, not per-chunk metadata."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunks = [
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 1, "Patient A"),
+        _make_chunk("doc-a", "01_patient_a_routine_labs.pdf", 2, "Hemoglobin 13.4 g/dL"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 1, "Patient B"),
+        _make_chunk("doc-b", "02_patient_b_low_hemoglobin.pdf", 2, "Hemoglobin 10.8 g/dL"),
+    ]
+    captured = {}
+
+    def mock_get(where, include):
+        captured["where"] = where
+        return {
+            "ids": [chunk["id"] for chunk in chunks],
+            "documents": [chunk["text"] for chunk in chunks],
+            "metadatas": [chunk["metadata"] for chunk in chunks],
+        }
+
+    monkeypatch.setattr("app.hybrid_retriever.collection.get", mock_get)
+    result = HybridRetriever.get_all_chunks(
+        session_id="qa-session",
+        document_ids=["doc-a", "doc-b"],
+        patient_label="Patient B",
+    )
+
+    assert {chunk["metadata"]["document_id"] for chunk in result} == {"doc-b"}
+    assert {chunk["metadata"]["page"] for chunk in result} == {1, 2}
+    assert "patient_label" not in str(captured["where"])
+
+
+def test_get_all_chunks_report_scope_keeps_result_pages_when_id_is_on_cover(monkeypatch):
+    """A report ID on page one scopes the complete upload, not just that page."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunks = [
+        _make_chunk("doc-a", "patient_a_reports.pdf", 1, "Report ID: SYN-A-004", report_id="SYN-A-004"),
+        _make_chunk("doc-a", "patient_a_reports.pdf", 2, "Hemoglobin 11.2 g/dL"),
+        _make_chunk("doc-b", "patient_a_reports.pdf", 1, "Report ID: SYN-A-005", report_id="SYN-A-005"),
+        _make_chunk("doc-b", "patient_a_reports.pdf", 2, "Hemoglobin 14.0 g/dL"),
+    ]
+
+    monkeypatch.setattr(
+        "app.hybrid_retriever.collection.get",
+        lambda where, include: {
+            "ids": [chunk["id"] for chunk in chunks],
+            "documents": [chunk["text"] for chunk in chunks],
+            "metadatas": [chunk["metadata"] for chunk in chunks],
+        },
+    )
+    result = HybridRetriever.get_all_chunks(
+        session_id="qa-session",
+        document_ids=["doc-a", "doc-b"],
+        report_id="SYN-A-004",
+    )
+
+    assert {chunk["metadata"]["document_id"] for chunk in result} == {"doc-a"}
+    assert {chunk["metadata"]["page"] for chunk in result} == {1, 2}
+
+
+def test_document_records_infer_patient_labels_for_existing_indexed_uploads(monkeypatch):
+    """Legacy records with unspecified metadata are labelled from their stored text/filename."""
+    from app.vector_store import list_document_records
+
+    metadata = [
+        {"document_id": "doc-a", "document_name": "01_patient_a_routine_labs.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+        {"document_id": "doc-a", "document_name": "01_patient_a_routine_labs.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+        {"document_id": "doc-mixed", "document_name": "08_multiple_records_scope_conflict.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+        {"document_id": "doc-mixed", "document_name": "08_multiple_records_scope_conflict.pdf", "patient_label": "unspecified", "session_id": "qa-session"},
+    ]
+    documents = [
+        "Patient A",
+        "Hemoglobin 13.4 g/dL",
+        "Patient B: hemoglobin 10.8 g/dL",
+        "Patient C: hemoglobin 14.1 g/dL",
+    ]
+    monkeypatch.setattr(
+        "app.vector_store.collection.get",
+        lambda where, include: {"metadatas": metadata, "documents": documents},
+    )
+
+    records = list_document_records("qa-session")
+    labels = {record["document_id"]: record["patient_label"] for record in records}
+
+    assert labels == {"doc-a": "Patient A", "doc-mixed": "mixed"}
