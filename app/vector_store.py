@@ -75,7 +75,19 @@ def add_documents(
 
     document_id = document_id or uuid.uuid4().hex
     inferred_patient_label = _infer_patient_label(chunks, document_name)
-    effective_patient_label = patient_label.strip() or inferred_patient_label
+    supplied_patient_label = patient_label.strip()
+    if inferred_patient_label == "mixed":
+        effective_patient_label = "mixed"
+    elif (
+        supplied_patient_label
+        and inferred_patient_label != "unspecified"
+        and supplied_patient_label.casefold() != inferred_patient_label.casefold()
+    ):
+        # A conflicting upload label must not silently override the PDF's
+        # explicit pseudonymous patient label.
+        effective_patient_label = "mixed"
+    else:
+        effective_patient_label = supplied_patient_label or inferred_patient_label
     texts, metadatas, ids = [], [], []
     for index, chunk in enumerate(chunks):
         metadata = chunk["metadata"].copy()
