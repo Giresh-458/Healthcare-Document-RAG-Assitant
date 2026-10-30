@@ -1590,3 +1590,23 @@ def test_upload_metadata_fails_closed_when_supplied_label_conflicts_with_pdf(mon
 
     stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
     assert stored_metadata[0]["patient_label"] == "mixed"
+
+
+def test_upload_metadata_infers_patient_label_from_prefixed_filename_when_text_has_none(monkeypatch):
+    """A Patient X filename prefix is recognized even when the filename starts with a sequence number."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [{
+        "text": "Metabolic panel results are listed below.",
+        "metadata": {"document_name": "03_patient_c_metabolic_panel.pdf", "page": 1},
+    }]
+    add_documents(chunks, session_id="qa-session", document_id="doc-c")
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert stored_metadata[0]["patient_label"] == "Patient C"
