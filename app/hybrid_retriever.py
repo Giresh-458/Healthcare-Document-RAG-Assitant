@@ -141,7 +141,11 @@ class HybridRetriever:
         if document_ids is None and document_names is None:
             return []
 
-        where = _where_clause(document_names, session_id, document_ids, patient_label, report_id)
+        # Patient labels and report IDs can be present only in PDF text or
+        # on a cover page. Do not push these filters into Chroma's per-chunk
+        # metadata predicate; load only the selected uploads, then apply
+        # upload-aware filters across their complete chunk sets.
+        where = _where_clause(document_names, session_id, document_ids)
         results = collection.get(where=where, include=["documents", "metadatas"])
         documents, metadatas, ids = (
             results.get("documents") or [],
@@ -162,9 +166,30 @@ class HybridRetriever:
             chunks = [c for c in chunks if c.get("metadata", {}).get("document_name") in allowed_names]
 
         if patient_label:
-            chunks = [c for c in chunks if c.get("metadata", {}).get("patient_label") == patient_label]
+            chunks = filter_patient_chunks(chunks, patient_label)
         if report_id:
-            chunks = [c for c in chunks if c.get("metadata", {}).get("report_id") == report_id]
+            matching_document_keys = {
+                c.get("metadata", {}).get("document_id")
+                or c.get("metadata", {}).get("document_name")
+                or c.get("id")
+                for c in chunks
+                if _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), report_id)
+                or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), report_id)
+                or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), report_id)
+                or _scope_phrase_matches(c.get("text", ""), report_id)
+            }
+            chunks = [
+                c for c in chunks
+                if (
+                    c.get("metadata", {}).get("document_id")
+                    or c.get("metadata", {}).get("document_name")
+                    or c.get("id")
+                ) in matching_document_keys
+                and (
+                    not c.get("metadata", {}).get("report_id")
+                    or _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), report_id)
+                )
+            ]
 
         return chunks
 
