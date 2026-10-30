@@ -1027,7 +1027,7 @@ def test_35_patient_scope_is_applied_before_top_k_retrieval(monkeypatch):
         patient_query="Patient B",
     )
 
-    assert [item["id"] for item in results] == ["doc-b"]
+    assert [item["metadata"]["document_id"] for item in results] == ["doc-b"]
     assert "Patient A" not in results[0]["text"]
     # Text-only patient scoping must not issue an unfiltered dense query.
     mock_collection.query.assert_not_called()
@@ -1052,7 +1052,7 @@ def test_36_report_descriptor_is_applied_before_top_k_retrieval(monkeypatch):
         report_type_query="follow-up",
     )
 
-    assert [item["id"] for item in results] == ["doc-f"]
+    assert [item["metadata"]["document_id"] for item in results] == ["doc-f"]
     assert "12.9" in results[0]["text"]
     assert "13.4" not in results[0]["text"]
     mock_collection.query.assert_not_called()
