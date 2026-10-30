@@ -176,6 +176,39 @@ def _scope_phrase_matches(value: str, phrase: str) -> bool:
     return bool(re.search(pattern, str(value), re.I))
 
 
+def _filter_report_scope(
+    chunks: List[Dict],
+    report_query: Optional[str],
+    strict_report_id: bool = True,
+) -> List[Dict]:
+    """Filter by report ID/type while retaining other pages from the matched upload."""
+    if not report_query:
+        return chunks
+    matching_document_keys = {
+        c.get("metadata", {}).get("document_id")
+        or c.get("metadata", {}).get("document_name")
+        or c.get("id")
+        for c in chunks
+        if _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), report_query)
+        or _scope_phrase_matches(c.get("metadata", {}).get("document_name", ""), report_query)
+        or _scope_phrase_matches(c.get("metadata", {}).get("document_id", ""), report_query)
+        or _scope_phrase_matches(c.get("text", ""), report_query)
+    }
+    return [
+        c for c in chunks
+        if (
+            c.get("metadata", {}).get("document_id")
+            or c.get("metadata", {}).get("document_name")
+            or c.get("id")
+        ) in matching_document_keys
+        and (
+            not strict_report_id
+            or not c.get("metadata", {}).get("report_id")
+            or _scope_phrase_matches(c.get("metadata", {}).get("report_id", ""), report_query)
+        )
+    ]
+
+
 def _parse_date_to_key(date_str: str) -> str:
     """Normalize common date formats (YYYY-MM-DD or DD/MM/YYYY) to YYYYMMDD for comparison."""
     if not date_str:
@@ -376,6 +409,162 @@ def _all_hemoglobin_candidates(
     }
 
 
+def _all_reference_range_candidates(
+    question: str,
+    chunks: List[Dict],
+    start_time: float,
+    system1_enabled: bool = False,
+    system1_provider: str = "codiv",
+    system1_api_key: Optional[str] = None,
+    system1_threshold: float = DEFAULT_SUFFICIENCY_THRESHOLD,
+    system1_endpoint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Extract report-stated reference intervals without mixing measured values."""
+    clinical_test = _extract_clinical_test(question)
+    if not clinical_test:
+        return {
+            "answer": "Which laboratory test's reference range would you like to find in the uploaded reports?",
+            "clarification_required": True,
+            "sources": [],
+            "metrics": {"retrieved_chunks": 0, "latency_sec": round(time.time() - start_time, 2)},
+            "route": "CLARIFICATION",
+            "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": True},
+        }
+
+    aliases = {
+        "hemoglobin": r"(?:hemoglobin|haemoglobin|hgb|hb)",
+        "hba1c": r"(?:hba1c|hemoglobin\s+a1c)",
+    }
+    test_pattern = aliases.get(clinical_test, rf"\b{re.escape(clinical_test)}\b")
+    range_pattern = re.compile(
+        r"\b(?:reference(?:\s+(?:range|interval))?|ref\.?\s*range|normal\s+range)\b"
+        r"\s*[:=]?\s*(\d{1,3}(?:\.\d+)?)\s*(?:-|–|—|\bto\b)\s*"
+        r"(\d{1,3}(?:\.\d+)?)\s*([A-Za-zµμ%]+(?:\s*/\s*[A-Za-zµμ0-9^]+)?)?",
+        re.I,
+    )
+    rows, matching_chunks, seen = [], [], set()
+    for chunk in chunks:
+        text = str(chunk.get("text", "") or "")
+        lines = text.splitlines() or [text]
+        matched_chunk = False
+        for line_index, line in enumerate(lines):
+            context = " ".join(lines[max(0, line_index - 1):min(len(lines), line_index + 2)])
+            if not re.search(test_pattern, context, re.I):
+                continue
+            for match in range_pattern.finditer(line):
+                metadata = chunk.get("metadata", {})
+                low, high = match.group(1), match.group(2)
+                unit = re.sub(r"\s+", "", match.group(3) or "") or "unit not stated"
+                key = (metadata.get("document_id"), metadata.get("page"), low, high, unit.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "lower": low,
+                    "upper": high,
+                    "unit": unit,
+                    "document": metadata.get("document_name", "unknown"),
+                    "document_id": metadata.get("document_id", ""),
+                    "page": metadata.get("page", "?"),
+                    "report_id": metadata.get("report_id", ""),
+                    "report_date": metadata.get("report_date", ""),
+                })
+                matched_chunk = True
+        if matched_chunk:
+            matching_chunks.append(chunk)
+
+    system1_decision_dict = None
+    if system1_enabled and matching_chunks:
+        decision = evaluate_evidence_sufficiency(
+            question=question,
+            chunks=matching_chunks[:TOP_K * 2],
+            provider=system1_provider,
+            api_key=(system1_api_key or "").strip(),
+            threshold=system1_threshold,
+            endpoint=system1_endpoint,
+        )
+        system1_decision_dict = decision.to_dict()
+        if decision.status != "SUFFICIENT":
+            if decision.status == "ERROR":
+                notice = (
+                    "The System 1 evidence-sufficiency gate could not verify the reference-range evidence. "
+                    "No reference interval is being returned."
+                )
+            else:
+                notice = (
+                    "The uploaded reports did not provide sufficient verified evidence to extract the requested "
+                    "reference range accurately. No reference interval is being returned."
+                )
+            sources, seen_sources = [], set()
+            for chunk in matching_chunks:
+                source = _source(chunk)
+                key = (source["document_id"], source["document"], source["page"])
+                if key not in seen_sources:
+                    seen_sources.add(key)
+                    sources.append(source)
+            metrics = RagMetrics.log_metrics(question, notice, matching_chunks, round(time.time() - start_time, 2))
+            metrics["system1_decision"] = system1_decision_dict
+            return {
+                "answer": notice,
+                "sources": sources,
+                "metrics": metrics,
+                "route": "REFERENCE_RANGE_SCAN",
+                "structured_data": {
+                    "confidence": "low",
+                    "medical_entities": [clinical_test],
+                    "requires_doctor_review": True,
+                    "system1_decision": system1_decision_dict,
+                },
+                "abstained_by_system1": True,
+            }
+
+    sources, seen_sources = [], set()
+    for chunk in matching_chunks:
+        source = _source(chunk)
+        key = (source["document_id"], source["document"], source["page"])
+        if key not in seen_sources:
+            seen_sources.add(key)
+            sources.append(source)
+
+    if rows:
+        interval_lines = [
+            f"- {row['lower']}–{row['upper']} {row['unit']} — {row['document']}, page {row['page']}"
+            for row in rows
+        ]
+        answer = (
+            f"The selected reports state these {clinical_test} reference intervals:\n"
+            + "\n".join(interval_lines)
+            + "\n\nThese are transcribed from the uploaded reports, not a universal reference range. "
+              "Intervals can vary by laboratory and patient context."
+        )
+    else:
+        answer = (
+            f"No explicit {clinical_test} reference range was found in the selected uploaded reports. "
+            "I will not substitute a general medical reference range that is not stated in those documents."
+        )
+
+    latency = round(time.time() - start_time, 2)
+    metrics = RagMetrics.log_metrics(question, answer, matching_chunks, latency)
+    metrics["reference_range_candidates"] = len(rows)
+    metrics["aggregation_method"] = "full-corpus report-stated reference interval scan"
+    if system1_decision_dict:
+        metrics["system1_decision"] = system1_decision_dict
+    structured_data = {
+        "confidence": "high" if rows else "low",
+        "medical_entities": [clinical_test],
+        "requires_doctor_review": True,
+    }
+    if system1_decision_dict:
+        structured_data["system1_decision"] = system1_decision_dict
+    return {
+        "answer": answer,
+        "sources": sources,
+        "metrics": metrics,
+        "route": "REFERENCE_RANGE_SCAN",
+        "structured_data": structured_data,
+    }
+
+
 def answer_question(
     question: str,
     provider: str,
@@ -491,6 +680,36 @@ def answer_question(
         return _all_hemoglobin_candidates(
             question=question,
             chunks=chunks,
+            start_time=start_time,
+            system1_enabled=system1_enabled,
+            system1_provider=system1_provider,
+            system1_api_key=system1_api_key,
+            system1_threshold=system1_threshold,
+            system1_endpoint=system1_endpoint,
+        )
+
+    asks_reference_range = bool(
+        re.search(r"\b(reference\s+(?:range|interval)|ref\.?\s*range|normal\s+range)\b", question, re.I)
+    )
+    if asks_reference_range:
+        # Reference intervals are report facts, not measured patient results.
+        # Scan the selected corpus so a top-K cutoff cannot hide a report's range.
+        reference_chunks = HybridRetriever.get_all_chunks(
+            document_names=document_names,
+            session_id=session_id,
+            document_ids=document_ids,
+            patient_label=patient_label,
+            report_id=None,
+        )
+        if target_patient:
+            reference_chunks = filter_patient_chunks(reference_chunks, target_patient)
+        if target_report:
+            reference_chunks = _filter_report_scope(reference_chunks, target_report, strict_report_id=True)
+        if report_descriptor:
+            reference_chunks = _filter_report_scope(reference_chunks, report_descriptor, strict_report_id=False)
+        return _all_reference_range_candidates(
+            question=question,
+            chunks=reference_chunks,
             start_time=start_time,
             system1_enabled=system1_enabled,
             system1_provider=system1_provider,
