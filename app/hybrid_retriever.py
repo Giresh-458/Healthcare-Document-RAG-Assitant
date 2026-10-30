@@ -69,30 +69,34 @@ def filter_patient_chunks(chunks: List[Dict], patient_query: Optional[str]) -> L
         metadata = chunk.get("metadata", {})
         document_key = metadata.get("document_id") or metadata.get("document_name") or chunk.get("id") or index
         identities = identities_by_document.setdefault(document_key, set())
+        chunk_identities = set()
 
         label = str(metadata.get("patient_label", "") or "").strip()
         if label and label.casefold() != "unspecified":
-            identities.add(label)
+            chunk_identities.add(label)
 
         text = str(chunk.get("text", "") or "")
         for match in re.finditer(r"\bPatient[\s_-]+([A-Za-z0-9_-]+)\b", text, re.I):
             token = match.group(1)
             if token.casefold() not in {"id", "name", "record", "history", "details"}:
-                identities.add(f"Patient {token}")
+                chunk_identities.add(f"Patient {token}")
         for match in re.finditer(r"\b((?:Mr\.|Ms\.|Mrs\.|Dr\.)\s+[A-Za-z]+(?:\s+[A-Za-z]+)?)\b", text, re.I):
-            identities.add(match.group(1).strip())
+            chunk_identities.add(match.group(1).strip())
 
         document_name = str(metadata.get("document_name", "") or "")
         filename_match = re.search(r"\bpatient[_-]([a-z0-9]+)\b", document_name, re.I)
         if filename_match:
-            identities.add(f"Patient {filename_match.group(1)}")
+            chunk_identities.add(f"Patient {filename_match.group(1)}")
 
+        identities.update(chunk_identities)
         direct = (
             _scope_phrase_matches(label, patient_query)
             or _scope_phrase_matches(text, patient_query)
             or _scope_phrase_matches(document_name, patient_query)
         )
-        if direct:
+        # Never pass a chunk that explicitly identifies more than one patient
+        # (or a different patient) into a single-patient answer.
+        if direct and all(_scope_phrase_matches(identity, patient_query) for identity in chunk_identities):
             matching_documents.add(document_key)
             direct_matches.add(chunk.get("id") or index)
 
