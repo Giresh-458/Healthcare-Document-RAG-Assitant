@@ -1565,3 +1565,28 @@ def test_upload_metadata_marks_mixed_patient_pdf_without_assigning_filename_pati
 
     stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
     assert [item["patient_label"] for item in stored_metadata] == ["mixed", "mixed"]
+
+
+def test_upload_metadata_fails_closed_when_supplied_label_conflicts_with_pdf(monkeypatch):
+    """A user-supplied label cannot silently override a conflicting PDF label."""
+    from app.vector_store import add_documents
+
+    embeddings = MagicMock()
+    embeddings.embed_documents.return_value = [[0.1] * 384]
+    collection = MagicMock()
+    monkeypatch.setattr("app.vector_store.get_embeddings_model", lambda: embeddings)
+    monkeypatch.setattr("app.vector_store.collection", collection)
+
+    chunks = [{
+        "text": "Patient B: hemoglobin 10.8 g/dL",
+        "metadata": {"document_name": "02_patient_b_low_hemoglobin.pdf", "page": 1},
+    }]
+    add_documents(
+        chunks,
+        session_id="qa-session",
+        document_id="doc-conflict",
+        patient_label="Patient A",
+    )
+
+    stored_metadata = collection.upsert.call_args.kwargs["metadatas"]
+    assert stored_metadata[0]["patient_label"] == "mixed"
