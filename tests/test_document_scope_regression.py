@@ -1344,3 +1344,38 @@ def test_49_reference_range_scan_handles_test_and_interval_split_across_chunks(m
     assert "12.0–16.0 g/dL" in result["answer"]
     assert result["route"] == "REFERENCE_RANGE_SCAN"
     assert len(result["sources"]) == 1
+
+
+def test_50_top_k_result_page_without_cover_labels_is_not_dropped(monkeypatch):
+    """A correctly prefiltered result page may not repeat patient/report labels."""
+    result_page = _make_chunk("doc-followup", "lab.pdf", 2, "Hemoglobin 12.9 g/dL")
+
+    captured_context = None
+    mock_chat = MagicMock()
+
+    def mock_invoke(messages):
+        nonlocal captured_context
+        captured_context = messages[1].content
+        return MedicalAnswer(
+            answer="Patient A's follow-up hemoglobin is 12.9 g/dL.",
+            confidence="high",
+            medical_entities=["hemoglobin"],
+            requires_doctor_review=True,
+        )
+
+    mock_chat.with_structured_output.return_value.invoke = mock_invoke
+    monkeypatch.setattr("app.rag.get_llm", lambda p, k: mock_chat)
+    monkeypatch.setattr("app.rag.QueryRouter.classify", lambda q, m: "FACTOID")
+    # Simulate the output of the full-corpus prefiltered retriever: only the
+    # value page is in top-K, while patient/report labels exist on the cover.
+    monkeypatch.setattr("app.rag.HybridRetriever.search", lambda *args, **kwargs: [result_page])
+
+    result = answer_question(
+        question="What is Patient A's follow-up hemoglobin?",
+        provider="groq",
+        api_key="gsk-key",
+        document_ids=["doc-followup"],
+    )
+
+    assert "12.9 g/dL" in captured_context
+    assert [source["page"] for source in result["sources"]] == [2]
