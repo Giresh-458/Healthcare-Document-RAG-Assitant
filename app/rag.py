@@ -514,7 +514,8 @@ def answer_question(
     relevant_chunks = HybridRetriever.search(
         question, top_k=k_value, document_names=document_names, session_id=session_id,
         document_ids=document_ids, patient_label=patient_label, report_id=report_id,
-        patient_query=target_patient, report_query=target_report or report_descriptor,
+        patient_query=target_patient, report_query=target_report,
+        report_type_query=report_descriptor,
     )
     if not relevant_chunks:
         return {
@@ -640,7 +641,7 @@ def answer_question(
     # Plain-language report types (e.g. follow-up vs routine) are also scope
     # constraints. Apply them at the upload level because the descriptor may
     # appear only in a report heading on the first page.
-    if report_descriptor and not target_report:
+    if report_descriptor:
         matching_document_keys = {
             c.get("metadata", {}).get("document_id")
             or c.get("metadata", {}).get("document_name")
