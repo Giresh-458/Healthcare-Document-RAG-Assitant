@@ -1010,3 +1010,85 @@ def test_34_exact_user_scenario_what_is_hemoglobin_level_with_3_unlabelled_docs(
     assert result["sources"] == []
 
 
+
+def test_35_patient_scope_is_applied_before_top_k_retrieval(monkeypatch):
+    """Question-derived patient scope must filter the corpus before ranking."""
+    from app.hybrid_retriever import HybridRetriever
+
+    chunk_a = _make_chunk("doc-a", "patient_a.pdf", 1, "Patient A Hemoglobin 14.2 g/dL", patient_label="unspecified")
+    chunk_b = _make_chunk("doc-b", "patient_b.pdf", 1, "Patient B Hemoglobin 10.8 g/dL", patient_label="unspecified")
+    monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [chunk_a, chunk_b])
+    mock_collection = MagicMock()
+    mock_collection.query.return_value = {"ids": [[]]}
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "What is Patient B's hemoglobin?",
+        top_k=1,
+        document_ids=["doc-a", "doc-b"],
+        patient_query="Patient B",
+    )
+
+    assert [item["id"] for item in results] == ["doc-b"]
+    assert "Patient A" not in results[0]["text"]
+    # Text-only patient scoping must not issue an unfiltered dense query.
+    mock_collection.query.assert_not_called()
+
+
+def test_36_report_descriptor_is_applied_before_top_k_retrieval(monkeypatch):
+    """A follow-up report must not be displaced by a higher-scoring routine report."""
+    from app.hybrid_retriever import HybridRetriever
+
+    routine = _make_chunk("doc-r", "patient_a_routine_report.pdf", 1, "Patient A routine hemoglobin 13.4 g/dL")
+    followup = _make_chunk("doc-f", "patient_a_followup_report.pdf", 1, "Patient A follow-up hemoglobin 12.9 g/dL")
+    monkeypatch.setattr("app.hybrid_retriever.HybridRetriever.get_all_chunks", lambda **kwargs: [routine, followup])
+    mock_collection = MagicMock()
+    mock_collection.query.return_value = {"ids": [[]]}
+    monkeypatch.setattr("app.hybrid_retriever.collection", mock_collection)
+
+    results = HybridRetriever.search(
+        "What is Patient A's follow-up hemoglobin?",
+        top_k=1,
+        document_ids=["doc-r", "doc-f"],
+        patient_query="Patient A",
+        report_query="follow-up",
+    )
+
+    assert [item["id"] for item in results] == ["doc-f"]
+    assert "12.9" in results[0]["text"]
+    assert "13.4" not in results[0]["text"]
+    mock_collection.query.assert_not_called()
+
+
+def test_37_report_id_is_not_inherited_from_assistant_citation_for_new_query():
+    """Assistant-generated citations must not silently constrain a later report query."""
+    history = [
+        {"role": "user", "content": "What is Patient A's routine hemoglobin?"},
+        {"role": "assistant", "content": "The result is in report SYN-A-001."},
+    ]
+    assert _extract_target_report(
+        "What is Patient A's follow-up hemoglobin?",
+        history=history,
+    ) is None
+
+
+def test_38_reference_range_question_does_not_inherit_old_patient_scope():
+    """A broad reference-range question must not inherit a prior patient label."""
+    history = [
+        {"role": "user", "content": "What is Patient A's hemoglobin?"},
+        {"role": "assistant", "content": "Patient A's result is 13.4 g/dL."},
+    ]
+    assert _extract_target_patient(
+        "What is the hemoglobin reference range according to uploaded reports?",
+        history=history,
+    ) is None
+
+
+def test_39_report_id_history_is_inherited_only_for_anaphoric_follow_up():
+    """A user can still refer to the same report explicitly across turns."""
+    history = [
+        {"role": "user", "content": "What is the hemoglobin in report SYN-A-001?"},
+        {"role": "assistant", "content": "The result is 13.4 g/dL."},
+    ]
+    assert _extract_target_report("What is that report's date?", history=history) == "SYN-A-001"
+
