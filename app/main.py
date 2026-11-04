@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from app.pdf_processor import process_pdf
 from app.text_processor import chunk_text
 from app.vector_store import add_documents, list_documents, list_document_records
-from app.rag import answer_question
+from app.rag import answer_question, _resolve_contextual_followup
 
 app = FastAPI(title="Healthcare Document RAG API")
 _default_origins = "http://localhost:8501,http://127.0.0.1:8501"
@@ -188,6 +188,19 @@ def ask_question_endpoint(req: AskRequest):
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    # Streamlit sends the current turn as the final history item. Remove it
+    # before resolving a context-only follow-up, then pass the same clean
+    # history to the RAG layer so the current turn is not replayed twice.
+    conversation_history = list(req.conversation_history or [])
+    if conversation_history:
+        last_message = conversation_history[-1]
+        if (
+            last_message.get("role") == "user"
+            and str(last_message.get("content", "")).strip() == question
+        ):
+            conversation_history = conversation_history[:-1]
+    question = _resolve_contextual_followup(question, conversation_history)
     session_id = _safe_component(req.session_id, "session_id")[:64]
     if req.document_names is not None and len(req.document_names) > 100:
         raise HTTPException(status_code=400, detail="Too many document filters")
@@ -287,7 +300,7 @@ def ask_question_endpoint(req: AskRequest):
             system1_provider=req.system1_provider,
             system1_api_key=req.system1_api_key or None,
             system1_threshold=req.system1_threshold,
-            conversation_history=req.conversation_history,
+            conversation_history=conversation_history,
             report_id=req.report_id,
         )
     except ValueError as exc:
