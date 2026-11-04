@@ -593,9 +593,9 @@ def _resolve_contextual_followup(
     """
     current = (question or "").strip()
     context_only = re.fullmatch(
-        r"(?:(?:from|in|using|based on)\\s+)?(?:the\\s+)?"
-        r"(?:uploaded|selected|available)\\s+(?:records?|reports?|documents?)"
-        r"(?:\\s+only)?[.!?]*",
+        r"(?:(?:from|in|using|based on)\s+)?(?:the\s+)?"
+        r"(?:uploaded|selected|available)\s+(?:records?|reports?|documents?)"
+        r"(?:\s+only)?[.!?]*",
         current,
         re.IGNORECASE,
     )
@@ -603,10 +603,10 @@ def _resolve_contextual_followup(
         return current
 
     clinical_context = re.compile(
-        r"\\b(hemoglobin|haemoglobin|hgb|hb|platelets?|glucose|cholesterol|"
+        r"\b(hemoglobin|haemoglobin|hgb|hb|platelets?|glucose|cholesterol|"
         r"potassium|sodium|wbc|rbc|creatinine|calcium|bilirubin|hba1c|"
         r"lab(?:oratory)?|medical|patient|clinical|diagnos(?:is|es)|medication|"
-        r"blood\\s+test|report)\\b",
+        r"blood\s+test|report)\b",
         re.IGNORECASE,
     )
     for message in reversed(conversation_history[-8:]):
