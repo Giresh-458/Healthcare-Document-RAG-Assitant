@@ -267,3 +267,38 @@ def test_ask_without_document_selection_fails_closed_before_lookup_or_generation
     assert "No documents are selected" in data["answer"]
     assert data["sources"] == []
     assert data["metrics"]["retrieved_chunks"] == 0
+
+
+def test_api_resolves_contextual_followup_before_patient_ambiguity_gate(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "list_document_records", lambda session_id: [
+        {"document_id": "doc-a", "document_name": "a.pdf", "patient_label": "Patient A"},
+        {"document_id": "doc-b", "document_name": "b.pdf", "patient_label": "Patient B"},
+    ])
+    captured = {}
+
+    def fake_answer_question(question, *args, **kwargs):
+        captured["question"] = question
+        captured["history"] = kwargs.get("conversation_history")
+        return {"answer": "grounded test response", "route": "FACTOID", "sources": []}
+
+    monkeypatch.setattr(main_module, "answer_question", fake_answer_question)
+    response = client.post("/ask", json={
+        "question": "from the uploaded records",
+        "session_id": "test-session",
+        "document_ids": ["doc-a", "doc-b"],
+        "conversation_history": [
+            {"role": "user", "content": "What is Patient A's hemoglobin level?"},
+            {"role": "assistant", "content": "I can check Patient A's report."},
+            {"role": "user", "content": "from the uploaded records"},
+        ],
+    })
+
+    assert response.status_code == 200
+    assert captured["question"] == "What is Patient A's hemoglobin level? (using the selected uploaded records)"
+    assert captured["history"] == [
+        {"role": "user", "content": "What is Patient A's hemoglobin level?"},
+        {"role": "assistant", "content": "I can check Patient A's report."},
+    ]
