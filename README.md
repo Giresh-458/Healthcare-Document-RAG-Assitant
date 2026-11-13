@@ -1,6 +1,6 @@
 # HealthRAG: Healthcare Document RAG Assistant with System 1 Decision Gate
 
-HealthRAG is a production-grade, grounded Retrieval-Augmented Generation (RAG) assistant designed for clinical and lab document analysis. It pairs a fast, non-autoregressive **System 1 decision gate** with a **System 2 LLM** (Groq / OpenAI / Gemini) to evaluate evidence sufficiency, reduce unsupported answers, and improve abstention behavior before invoking answer generation.
+HealthRAG is an experimental, grounded Retrieval-Augmented Generation (RAG) prototype for exploring clinical and lab document analysis. It is intended for education, portfolio demonstration, and controlled evaluation—not clinical deployment or real patient-care decisions. Use synthetic or properly de-identified documents only. It pairs a fast, non-autoregressive **System 1 decision gate** with a **System 2 LLM** (Groq / OpenAI / Gemini) to evaluate evidence sufficiency, reduce unsupported answers, and improve abstention behavior before invoking answer generation.
 
 ---
 
