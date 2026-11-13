@@ -223,6 +223,9 @@ python -m eval.evaluate_system1 --live
 ## 8. Quickstart Guide
 
 ### 1. Installation
+
+Scanned-PDF OCR requires the Tesseract system executable in addition to the Python package. On Ubuntu/Debian, install it with `sudo apt-get install tesseract-ocr`; on Windows, install Tesseract and set `TESSERACT_CMD` to its executable path if it is not on `PATH`. Streamlit Community Cloud can install the Ubuntu package from the repository's `packages.txt`.
+
 ```bash
 git clone https://github.com/Giresh-458/Healthcare-Document-RAG-Assitant.git
 cd Healthcare-Document-RAG-Assitant
@@ -251,7 +254,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 Terminal 2 (Streamlit UI):
 ```bash
-streamlit run frontend/streamlit_app.py
+streamlit run streamlit_app.py
 ```
 
 ### 4. Running Regression Tests
