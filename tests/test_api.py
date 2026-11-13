@@ -302,3 +302,33 @@ def test_api_resolves_contextual_followup_before_patient_ambiguity_gate(monkeypa
         {"role": "user", "content": "What is Patient A's hemoglobin level?"},
         {"role": "assistant", "content": "I can check Patient A's report."},
     ]
+
+
+
+def test_upload_reports_configured_page_limit_without_indexing(tmp_path, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "APP_API_TOKEN", "")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        main_module,
+        "process_pdf",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("PDF contains 16 pages; the configured limit is 15. Split the PDF or increase MAX_PDF_PAGES.")
+        ),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "add_documents",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not index a rejected PDF")),
+    )
+
+    response = client.post(
+        "/upload",
+        files={"file": ("long-report.pdf", b"%PDF-1.4 test", "application/pdf")},
+        data={"session_id": "test-session"},
+    )
+
+    assert response.status_code == 422
+    assert "PDF contains 16 pages" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
