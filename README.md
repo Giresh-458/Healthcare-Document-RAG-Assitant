@@ -94,6 +94,7 @@ HealthRAG implements a strict conservative policy:
 
 ### Key Protections & Endpoint Security
 - **Strict HTTPS Endpoint Allowlist:** Arbitrary caller-controlled endpoint overrides are prohibited. Requests are strictly confined to verified provider endpoints (`ALLOWED_SYSTEM1_ENDPOINTS`), preventing secret exfiltration attacks.
+- **Session IDs Are Not Authentication:** `session_id` is a client-supplied data-isolation label, not a verified user identity or authorization boundary. `APP_API_TOKEN` is only a shared API gate, not per-user authentication. Do not expose the backend publicly for multi-user or real-patient use without adding identity-based authentication and server-side session-to-user authorization.
 - **No Client-Side Leaks:** API keys never appear in frontend bundles, client assets, or Git.
 - **Request-Scoped Execution:** Keys are provided via the Streamlit sidebar per session and passed in the JSON request body. Keys are never saved to disk or database.
 - **Log Sanitization:** API keys and authorization headers are stripped from application logs and error traces.
