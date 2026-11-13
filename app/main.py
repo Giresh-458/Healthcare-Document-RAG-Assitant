@@ -152,6 +152,8 @@ async def upload_document(file: UploadFile = File(...), session_id: str = Form("
         }
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception:
         raise HTTPException(status_code=422, detail="Could not process this PDF")
     finally:

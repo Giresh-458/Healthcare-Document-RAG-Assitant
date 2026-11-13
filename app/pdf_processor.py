@@ -16,7 +16,12 @@ def process_pdf(
 
     extracted_pages: List[Dict] = []
     with fitz.open(file_path) as doc:
-        for page_num in range(min(len(doc), max_pages)):
+        if len(doc) > max_pages:
+            raise ValueError(
+                f"PDF contains {len(doc)} pages; the configured limit is {max_pages}. "
+                "Split the PDF or increase MAX_PDF_PAGES."
+            )
+        for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             text = page.get_text("text").strip()
             if len(text) < 50 and OCR_ENABLED:
