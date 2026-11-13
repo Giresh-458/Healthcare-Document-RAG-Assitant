@@ -581,6 +581,47 @@ def _all_reference_range_candidates(
     }
 
 
+def _resolve_contextual_followup(
+    question: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    """Resolve short document-reference replies against the preceding clinical question.
+
+    A reply such as "from the uploaded records" is not a standalone query. Reuse
+    only the immediately preceding user question when it clearly names a clinical
+    measurement or healthcare-record topic; never infer patient identity here.
+    """
+    current = (question or "").strip()
+    context_only = re.fullmatch(
+        r"(?:(?:from|in|using|based on)\s+)?(?:the\s+)?"
+        r"(?:uploaded|selected|available)\s+(?:records?|reports?|documents?)"
+        r"(?:\s+only)?[.!?]*",
+        current,
+        re.IGNORECASE,
+    )
+    if not context_only or not conversation_history:
+        return current
+
+    clinical_context = re.compile(
+        r"\b(hemoglobin|haemoglobin|hgb|hb|platelets?|glucose|cholesterol|"
+        r"potassium|sodium|wbc|rbc|creatinine|calcium|bilirubin|hba1c|"
+        r"lab(?:oratory)?|medical|patient|clinical|diagnos(?:is|es)|medication|"
+        r"blood\s+test|report)\b",
+        re.IGNORECASE,
+    )
+    for message in reversed(conversation_history[-8:]):
+        if message.get("role") != "user":
+            continue
+        previous = str(message.get("content", "") or "").strip()
+        if not previous or previous.casefold() == current.casefold():
+            continue
+        if clinical_context.search(previous):
+            return f"{previous.rstrip(' .!?')} (using the selected uploaded records)"
+        # Do not jump over a newer unrelated user request to revive stale context.
+        return current
+    return current
+
+
 def answer_question(
     question: str,
     provider: str,
@@ -632,6 +673,19 @@ def answer_question(
             "route": "NO_SELECTION",
             "structured_data": {"confidence": "low", "medical_entities": [], "requires_doctor_review": False},
         }
+
+    # Streamlit includes the just-submitted user turn in history. Remove that
+    # duplicate before resolving follow-ups or constructing the LLM message list.
+    original_question = question.strip()
+    conversation_history = list(conversation_history or [])
+    if conversation_history:
+        last_message = conversation_history[-1]
+        if (
+            last_message.get("role") == "user"
+            and str(last_message.get("content", "")).strip() == original_question
+        ):
+            conversation_history = conversation_history[:-1]
+    question = _resolve_contextual_followup(original_question, conversation_history)
 
     # Fast configuration check: If System 1 is enabled, key cannot be missing or blank
     if system1_enabled:
