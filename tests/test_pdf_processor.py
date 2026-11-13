@@ -58,7 +58,7 @@ def test_process_pdf_uses_ocr_when_page_has_insufficient_embedded_text(tmp_path,
     }]
 
 
-def test_process_pdf_respects_max_pages(tmp_path, monkeypatch):
+def test_process_pdf_rejects_pdf_exceeding_max_pages(tmp_path, monkeypatch):
     path = tmp_path / "multi-page.pdf"
     _write_pdf(path, [
         "First page contains enough embedded text. " * 3,
@@ -66,10 +66,8 @@ def test_process_pdf_respects_max_pages(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(pdf_processor, "OCR_ENABLED", False)
 
-    pages = pdf_processor.process_pdf(str(path), "multi-page.pdf", max_pages=1)
-
-    assert len(pages) == 1
-    assert pages[0]["page"] == 1
+    with pytest.raises(ValueError, match=r"PDF contains 2 pages.*configured limit is 1"):
+        pdf_processor.process_pdf(str(path), "multi-page.pdf", max_pages=1)
 
 
 @pytest.mark.parametrize("max_pages", [0, -1])
