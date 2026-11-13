@@ -297,7 +297,7 @@ def test_api_resolves_contextual_followup_before_patient_ambiguity_gate(monkeypa
     })
 
     assert response.status_code == 200
-    assert captured["question"] == "What is Patient A's hemoglobin level? (using the selected uploaded records)"
+    assert captured["question"] == "What is Patient A's hemoglobin level (using the selected uploaded records)"
     assert captured["history"] == [
         {"role": "user", "content": "What is Patient A's hemoglobin level?"},
         {"role": "assistant", "content": "I can check Patient A's report."},
